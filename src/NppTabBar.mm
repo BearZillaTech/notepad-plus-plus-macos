@@ -140,6 +140,7 @@ static NSImage *toolbarIcon(NSString *name) {
 @property (nonatomic, weak) id target;
 @property (nonatomic) SEL selectAction;
 @property (nonatomic) SEL closeAction;
+@property (nonatomic, readonly) BOOL hovered;  // exposed so the bar can gate close-button hits on hover state
 - (CGFloat)preferredWidth;
 @end
 
@@ -679,8 +680,12 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
     NSPoint p  = [item convertPoint:event.locationInWindow fromView:nil];
     CGFloat cx = item.bounds.size.width - kCloseSize - 6;
     BOOL closeVisible = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefTabCloseButton];
-    BOOL overClose = closeVisible && p.x >= cx && p.x <= cx + kCloseSize;
-    // Double-click anywhere on tab to close (if enabled)
+    // Issue #84 hardening #4 — restore the (isSelected || hovered) precondition.
+    // Without it, an unhovered/unselected tab can be closed by a click that lands
+    // in the close-button rect (e.g. blind clicks on a tab the user hasn't aimed at).
+    BOOL overClose = closeVisible && (item.isSelected || item.hovered)
+                     && p.x >= cx && p.x <= cx + kCloseSize;
+    // Double-click anywhere on tab to close (if enabled) — independent of hover.
     if (!overClose && event.clickCount == 2 &&
         [[NSUserDefaults standardUserDefaults] boolForKey:kPrefDoubleClickTabClose]) {
         overClose = YES;
@@ -688,6 +693,15 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
 
     if (overClose) {
         [self tabItemClosed:item];
+        return;
+    }
+
+    // Issue #84 hardening #5 — reject drag init for unlaid-out tabs.
+    // bitmapImageRepForCachingDisplayInRect: returns nil for zero-sized views,
+    // and a hidden source with no ghost is a confusing UI state. Treat as
+    // a plain click instead of starting a half-broken drag.
+    if (item.bounds.size.width < 1 || item.bounds.size.height < 1) {
+        [self tabItemSelected:item];
         return;
     }
 
@@ -699,9 +713,21 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
     NSImageView *dragGhost = nil;
     const CGFloat dragThreshold = 4.0;
 
+    BOOL aborted = NO;  // Issue #84 hardening #2 — flag for abort-on-removal path
+
     while (YES) {
         NSEvent *nextEvent = [self.window nextEventMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)];
         if (!nextEvent) break;
+
+        // Issue #84 hardening #2 — re-anchor fromIndex by object identity each
+        // tick. If external code mutated _items between events (a plugin or
+        // file watcher firing on a tracking-mode source), the captured
+        // tabIndex from drag-start would point at the wrong slot, or out of
+        // bounds. NSNotFound means the dragged tab was removed; abort cleanly
+        // through the unified cleanup below.
+        NSInteger live = [_items indexOfObjectIdenticalTo:item];
+        if (live == NSNotFound) { aborted = YES; break; }
+        fromIndex = live;
 
         NSPoint currentPoint = [_containerView convertPoint:nextEvent.locationInWindow fromView:nil];
         if (nextEvent.type == NSEventTypeLeftMouseDragged) {
@@ -726,6 +752,12 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
                     _dragReorderToIndex = fromIndex;
                     item.hidden = YES;
                     [self relayout];
+                } else if (_dragReorderFromIndex != fromIndex) {
+                    // External mutation shifted the dragged tab to a new slot
+                    // mid-drag — re-anchor the preview origin so layout draws
+                    // the gap at the correct (live) position.
+                    _dragReorderFromIndex = fromIndex;
+                    [self relayout];
                 }
                 if (dragGhost) {
                     NSPoint ghostPoint = [self convertPoint:nextEvent.locationInWindow fromView:nil];
@@ -747,13 +779,15 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
         if (nextEvent.type == NSEventTypeLeftMouseUp) break;
     }
 
-    item.hidden = NO;
-    _dragReorderFromIndex = -1;
-    _dragReorderToIndex = -1;
-    item.alphaValue = 1.0;
-    [dragGhost removeFromSuperview];
+    // Issue #84 hardening #3 — single cleanup point. Restores the source tab,
+    // removes the ghost, clears preview-state ivars, and forces a relayout so
+    // the gap-preview is torn down. Reached via every loop exit (mouseUp,
+    // nil-event, identity-abort).
+    [self _endDragCleanup:item ghost:dragGhost];
 
-    if (dragging && toIndex != fromIndex) {
+    if (aborted) return;  // dragged tab was removed mid-drag; nothing to commit/select
+
+    if (dragging && toIndex != fromIndex && toIndex >= 0 && toIndex < (NSInteger)_items.count) {
         [self moveTabAtIndex:fromIndex toIndex:toIndex];
         [self selectTabAtIndex:toIndex];
         if ([self.delegate respondsToSelector:@selector(tabBar:didMoveTabFromIndex:toIndex:)])
@@ -762,12 +796,18 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
         return;
     }
 
-    // Drag cancelled or dropped at original slot: preview layout must be torn down
-    // (tabItemSelected avoids selectTabAtIndex when already selected → no relayout otherwise).
-    if (dragging)
-        [self relayout];
-
     [self tabItemSelected:item];
+}
+
+// Issue #84 hardening #3 — unified cleanup helper. Idempotent on already-clean
+// state; safe to call from any drag-loop exit path.
+- (void)_endDragCleanup:(_NppTabItem *)item ghost:(NSImageView *)ghost {
+    if (item) item.hidden = NO;
+    [ghost removeFromSuperview];
+    BOOL hadPreview = (_dragReorderFromIndex >= 0);
+    _dragReorderFromIndex = -1;
+    _dragReorderToIndex   = -1;
+    if (hadPreview) [self relayout];
 }
 
 - (void)tabItemSelected:(_NppTabItem *)item {
