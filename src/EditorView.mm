@@ -2942,7 +2942,11 @@ static const int kIndicatorIncSearch = 28; // Scintilla indicator slot for incre
         int flags = 0;
         if ([ud boolForKey:kPrefSmartHiliteCase]) flags |= SCFIND_MATCHCASE;
         if ([ud boolForKey:kPrefSmartHiliteWord]) flags |= SCFIND_WHOLEWORD;
-        if (!flags) flags = SCFIND_WHOLEWORD | SCFIND_MATCHCASE; // default behavior
+        // Issue #64 — both options OFF should mean substring + case-insensitive
+        // (Windows NPP parity). The fallback below forced WHOLEWORD|MATCHCASE
+        // and made the four toggle states non-orthogonal vs the labels.
+        // Keeping commented out in case we want to revert.
+        // if (!flags) flags = SCFIND_WHOLEWORD | SCFIND_MATCHCASE; // default behavior
         [sci message:SCI_SETSEARCHFLAGS wParam:(uptr_t)flags];
     }
 
