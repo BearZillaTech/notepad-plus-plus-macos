@@ -2,8 +2,14 @@
 #import "NppThemeManager.h"
 #import "PreferencesWindowController.h"
 
+@class _NppTabItem;
+
 @interface NppTabBar (ContextMenu)
 - (NSMenu *)buildTabContextMenu;
+@end
+
+@interface NppTabBar (TabItemEvents)
+- (void)tabItemMouseDown:(_NppTabItem *)item event:(NSEvent *)event;
 @end
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -289,21 +295,7 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
 }
 
 - (void)mouseDown:(NSEvent *)event {
-    NSPoint p  = [self convertPoint:event.locationInWindow fromView:nil];
-    CGFloat cx = self.bounds.size.width - kCloseSize - 6;
-    BOOL closeVisible = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefTabCloseButton];
-    BOOL overClose = closeVisible && (_isSelected || _hovered)
-                     && p.x >= cx && p.x <= cx + kCloseSize;
-    // Double-click anywhere on tab to close (if enabled)
-    if (!overClose && event.clickCount == 2 &&
-        [[NSUserDefaults standardUserDefaults] boolForKey:kPrefDoubleClickTabClose]) {
-        overClose = YES;
-    }
-    SEL action = overClose ? _closeAction : _selectAction;
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-    [_target performSelector:action withObject:self];
-#pragma clang diagnostic pop
+    [(NppTabBar *)_target tabItemMouseDown:self event:event];
 }
 
 - (NSMenu *)menuForEvent:(NSEvent *)event {
@@ -389,6 +381,10 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
     CGFloat                        _preferredHeight;
     _NppScrollArrowButton         *_scrollLeftBtn;
     _NppScrollArrowButton         *_scrollRightBtn;
+    /// During drag-reorder: index of the tab being moved (-1 = none).
+    NSInteger                      _dragReorderFromIndex;
+    /// Drop slot index.
+    NSInteger                      _dragReorderToIndex;
 }
 
 - (instancetype)initWithFrame:(NSRect)frame {
@@ -397,6 +393,8 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
         _items         = [NSMutableArray array];
         _selectedIndex = -1;
         _preferredHeight = kTabBarBaseHeight;
+        _dragReorderFromIndex = -1;
+        _dragReorderToIndex   = -1;
         [self _buildUI];
         [[NSNotificationCenter defaultCenter]
             addObserver:self selector:@selector(_darkModeChanged:)
@@ -559,6 +557,219 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
 
 #pragma mark - Tab item callbacks
 
+- (NSInteger)_dropTargetIndexForContainerPoint:(NSPoint)p fromIndex:(NSInteger)from {
+    NSInteger n = (NSInteger)_items.count;
+    if (n <= 1) return 0;
+    if (from < 0 || from >= n) return 0;
+
+    if (_wrapMode) {
+        CGFloat wrapNeededH = [self _preferredHeightForWidth:self.bounds.size.width];
+        NSInteger best = from;
+        CGFloat bestD = CGFLOAT_MAX;
+        for (NSInteger cand = 0; cand < n; cand++) {
+            NSRect gr = [self _gapRectPreviewMoveFrom:from to:cand wrapBandHeight:wrapNeededH];
+            if (NSIsEmptyRect(gr)) continue;
+            NSPoint c = NSMakePoint(NSMidX(gr), NSMidY(gr));
+            CGFloat d = hypot(p.x - c.x, p.y - c.y);
+            if (d < bestD) {
+                bestD = d;
+                best = cand;
+            }
+        }
+        return best;
+    }
+
+    NSMutableArray<_NppTabItem *> *compact = [NSMutableArray array];
+    for (_NppTabItem *t in _items) {
+        if (t.tabIndex != from) [compact addObject:t];
+    }
+
+    CGFloat cum = 0;
+    for (NSInteger s = 0; s < n; s++) {
+        if (s >= (NSInteger)compact.count)
+            return n - 1;
+        CGFloat w = compact[s].preferredWidth;
+        if (p.x < cum + w * 0.5)
+            return s;
+        cum += w;
+    }
+    return n - 1;
+}
+
+- (NSRect)_gapRectPreviewMoveFrom:(NSInteger)from to:(NSInteger)to wrapBandHeight:(CGFloat)wrapBandHeight {
+    NSInteger n = (NSInteger)_items.count;
+    if (from < 0 || from >= n || n == 0) return NSZeroRect;
+    to = MAX(0, MIN(n - 1, to));
+
+    NSMutableArray<_NppTabItem *> *preview = [_items mutableCopy];
+    _NppTabItem *moving = preview[from];
+    [preview removeObjectAtIndex:from];
+    [preview insertObject:moving atIndex:to];
+
+    CGFloat barW = self.bounds.size.width;
+    CGFloat inactiveH = kTabBarBaseHeight - kTabTopGap - 1;
+    CGFloat activeH = inactiveH + kActiveBoost;
+
+    if (!_wrapMode) {
+        CGFloat x = 0;
+        for (_NppTabItem *item in preview) {
+            CGFloat w = item.preferredWidth;
+            if (item.tabIndex == from)
+                return NSMakeRect(x, 1, w, inactiveH);
+            x += w;
+        }
+        return NSZeroRect;
+    }
+
+    CGFloat neededH = wrapBandHeight > 0 ? wrapBandHeight : [self _preferredHeightForWidth:barW];
+    CGFloat rowStep = activeH + 1;
+    CGFloat x = 0;
+    NSInteger row = 0;
+    for (_NppTabItem *item in preview) {
+        CGFloat w = item.preferredWidth;
+        if (x + w > barW && x > 0) {
+            x = 0;
+            row++;
+        }
+        if (item.tabIndex == from) {
+            CGFloat y = neededH - (kTabTopGap - kActiveBoost) - activeH - ((CGFloat)row * rowStep);
+            return NSMakeRect(x, y, w, inactiveH);
+        }
+        x += w;
+    }
+    return NSZeroRect;
+}
+
+- (void)moveTabAtIndex:(NSInteger)fromIndex toIndex:(NSInteger)toIndex {
+    NSInteger count = (NSInteger)_items.count;
+    if (fromIndex < 0 || fromIndex >= count ||
+        toIndex < 0 || toIndex >= count ||
+        fromIndex == toIndex) return;
+
+    _NppTabItem *movingItem = _items[fromIndex];
+    [_items removeObjectAtIndex:(NSUInteger)fromIndex];
+    [_items insertObject:movingItem atIndex:(NSUInteger)toIndex];
+
+    if (_selectedIndex == fromIndex) {
+        _selectedIndex = toIndex;
+    } else if (fromIndex < _selectedIndex && _selectedIndex <= toIndex) {
+        _selectedIndex--;
+    } else if (toIndex <= _selectedIndex && _selectedIndex < fromIndex) {
+        _selectedIndex++;
+    }
+
+    for (NSInteger i = 0; i < (NSInteger)_items.count; i++) {
+        _items[i].tabIndex = i;
+        _items[i].isSelected = (i == _selectedIndex);
+    }
+    [self relayout];
+}
+
+- (NSImage *)_dragImageForTabItem:(_NppTabItem *)item {
+    NSBitmapImageRep *rep = [item bitmapImageRepForCachingDisplayInRect:item.bounds];
+    if (!rep) return nil;
+    [item cacheDisplayInRect:item.bounds toBitmapImageRep:rep];
+
+    NSImage *image = [[NSImage alloc] initWithSize:item.bounds.size];
+    [image addRepresentation:rep];
+    return image;
+}
+
+- (void)tabItemMouseDown:(_NppTabItem *)item event:(NSEvent *)event {
+    NSPoint p  = [item convertPoint:event.locationInWindow fromView:nil];
+    CGFloat cx = item.bounds.size.width - kCloseSize - 6;
+    BOOL closeVisible = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefTabCloseButton];
+    BOOL overClose = closeVisible && p.x >= cx && p.x <= cx + kCloseSize;
+    // Double-click anywhere on tab to close (if enabled)
+    if (!overClose && event.clickCount == 2 &&
+        [[NSUserDefaults standardUserDefaults] boolForKey:kPrefDoubleClickTabClose]) {
+        overClose = YES;
+    }
+
+    if (overClose) {
+        [self tabItemClosed:item];
+        return;
+    }
+
+    NSInteger fromIndex = item.tabIndex;
+    NSInteger toIndex = fromIndex;
+    BOOL dragging = NO;
+    NSPoint downPoint = [_containerView convertPoint:event.locationInWindow fromView:nil];
+    NSPoint dragOffsetInItem = [item convertPoint:event.locationInWindow fromView:nil];
+    NSImageView *dragGhost = nil;
+    const CGFloat dragThreshold = 4.0;
+
+    while (YES) {
+        NSEvent *nextEvent = [self.window nextEventMatchingMask:(NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp)];
+        if (!nextEvent) break;
+
+        NSPoint currentPoint = [_containerView convertPoint:nextEvent.locationInWindow fromView:nil];
+        if (nextEvent.type == NSEventTypeLeftMouseDragged) {
+            CGFloat dx = currentPoint.x - downPoint.x;
+            CGFloat dy = currentPoint.y - downPoint.y;
+            if (!dragging && hypot(dx, dy) >= dragThreshold) dragging = YES;
+            if (dragging) {
+                if (_dragReorderFromIndex < 0) {
+                    NSImage *image = [self _dragImageForTabItem:item];
+                    if (image) {
+                        dragGhost = [[NSImageView alloc] initWithFrame:[self convertRect:item.bounds fromView:item]];
+                        dragGhost.image = image;
+                        dragGhost.imageScaling = NSImageScaleAxesIndependently;
+                        dragGhost.alphaValue = 0.65;
+                        dragGhost.wantsLayer = YES;
+                        dragGhost.layer.shadowOpacity = 0.25;
+                        dragGhost.layer.shadowRadius = 4.0;
+                        dragGhost.layer.shadowOffset = NSMakeSize(0, -2);
+                        [self addSubview:dragGhost positioned:NSWindowAbove relativeTo:nil];
+                    }
+                    _dragReorderFromIndex = fromIndex;
+                    _dragReorderToIndex = fromIndex;
+                    item.hidden = YES;
+                    [self relayout];
+                }
+                if (dragGhost) {
+                    NSPoint ghostPoint = [self convertPoint:nextEvent.locationInWindow fromView:nil];
+                    dragGhost.frame = NSMakeRect(ghostPoint.x - dragOffsetInItem.x,
+                                                 ghostPoint.y - dragOffsetInItem.y,
+                                                 item.bounds.size.width,
+                                                 item.bounds.size.height);
+                }
+                NSInteger dropIndex = [self _dropTargetIndexForContainerPoint:currentPoint fromIndex:fromIndex];
+                if (dropIndex != _dragReorderToIndex) {
+                    _dragReorderToIndex = dropIndex;
+                    [self relayout];
+                }
+                toIndex = dropIndex;
+            }
+            continue;
+        }
+
+        if (nextEvent.type == NSEventTypeLeftMouseUp) break;
+    }
+
+    item.hidden = NO;
+    _dragReorderFromIndex = -1;
+    _dragReorderToIndex = -1;
+    item.alphaValue = 1.0;
+    [dragGhost removeFromSuperview];
+
+    if (dragging && toIndex != fromIndex) {
+        [self moveTabAtIndex:fromIndex toIndex:toIndex];
+        [self selectTabAtIndex:toIndex];
+        if ([self.delegate respondsToSelector:@selector(tabBar:didMoveTabFromIndex:toIndex:)])
+            [self.delegate tabBar:self didMoveTabFromIndex:fromIndex toIndex:toIndex];
+        [self.delegate tabBar:self didSelectTabAtIndex:toIndex];
+        return;
+    }
+
+    // Drag cancelled or dropped at original slot: preview layout must be torn down
+    // (tabItemSelected avoids selectTabAtIndex when already selected → no relayout otherwise).
+    if (dragging)
+        [self relayout];
+
+    [self tabItemSelected:item];
+}
+
 - (void)tabItemSelected:(_NppTabItem *)item {
     if (item.tabIndex != _selectedIndex)
         [self selectTabAtIndex:item.tabIndex];
@@ -603,7 +814,98 @@ static const CGFloat kPinSize = 11.0; // pin icon drawn at ~80% of original ~14p
     [self.superview setNeedsLayout:YES];
 }
 
+/// Live reorder preview: lays tabs out in drop order with an empty gap where the tab will land.
+- (void)_relayoutDragPreview {
+    NSInteger from = _dragReorderFromIndex;
+    NSInteger to = _dragReorderToIndex;
+    NSInteger n = (NSInteger)_items.count;
+    if (from < 0 || from >= n || n == 0) return;
+
+    to = MAX(0, MIN(n - 1, to));
+
+    NSMutableArray<_NppTabItem *> *preview = [_items mutableCopy];
+    _NppTabItem *moving = preview[from];
+    [preview removeObjectAtIndex:from];
+    [preview insertObject:moving atIndex:to];
+
+    CGFloat barW = self.bounds.size.width;
+    CGFloat barH = self.bounds.size.height;
+    if (barW < 1 || barH < 1) return;
+
+    CGFloat inactiveH = kTabBarBaseHeight - kTabTopGap - 1;
+    CGFloat activeH = inactiveH + kActiveBoost;
+
+    if (_wrapMode) {
+        CGFloat neededH = [self _preferredHeightForWidth:barW];
+        [self _setPreferredHeight:neededH];
+
+        _scrollLeftBtn.hidden = YES;
+        _scrollRightBtn.hidden = YES;
+        _scrollView.frame = NSMakeRect(0, 0, barW, barH);
+        [_scrollView.contentView scrollToPoint:NSZeroPoint];
+
+        CGFloat x = 0;
+        NSInteger row = 0;
+        CGFloat rowAdvance = activeH + 1;
+        for (_NppTabItem *item in preview) {
+            CGFloat w = item.preferredWidth;
+            if (x + w > barW && x > 0) {
+                x = 0;
+                row++;
+            }
+            if (item.tabIndex == from) {
+                x += w;
+                continue;
+            }
+            BOOL sel = (item.tabIndex == _selectedIndex && item.tabIndex != from);
+            CGFloat y = neededH - (kTabTopGap - kActiveBoost) - activeH - ((CGFloat)row * rowAdvance);
+            item.frame = NSMakeRect(x, y, w, sel ? activeH : inactiveH);
+            x += w;
+        }
+        _containerView.frame = NSMakeRect(0, 0, barW, neededH);
+        [self setNeedsDisplay:YES];
+        return;
+    }
+
+    [self _setPreferredHeight:kTabBarBaseHeight];
+
+    CGFloat totalTabsW = 0;
+    for (_NppTabItem *item in _items) totalTabsW += item.preferredWidth;
+
+    BOOL    needsArrows = (totalTabsW > barW);
+    CGFloat arrowsW     = needsArrows ? (2.0 * kArrowBtnW) : 0.0;
+    CGFloat scrollW     = barW - arrowsW;
+
+    _scrollView.frame = NSMakeRect(0, 0, scrollW, barH);
+
+    _scrollLeftBtn.hidden  = !needsArrows;
+    _scrollRightBtn.hidden = !needsArrows;
+    if (needsArrows) {
+        _scrollLeftBtn.frame  = NSMakeRect(scrollW,              0, kArrowBtnW, barH);
+        _scrollRightBtn.frame = NSMakeRect(scrollW + kArrowBtnW, 0, kArrowBtnW, barH);
+    }
+
+    CGFloat x = 0;
+    for (_NppTabItem *item in preview) {
+        CGFloat w = item.preferredWidth;
+        if (item.tabIndex == from) {
+            x += w;
+            continue;
+        }
+        BOOL sel = (item.tabIndex == _selectedIndex && item.tabIndex != from);
+        item.frame = NSMakeRect(x, 1, w, sel ? activeH : inactiveH);
+        x += w;
+    }
+    _containerView.frame = NSMakeRect(0, 0, MAX(x, scrollW), barH);
+    [self setNeedsDisplay:YES];
+}
+
 - (void)relayout {
+    if (_dragReorderFromIndex >= 0) {
+        [self _relayoutDragPreview];
+        return;
+    }
+
     CGFloat barW = self.bounds.size.width;
     CGFloat barH = self.bounds.size.height;
     if (barW < 1 || barH < 1) return;  // not yet sized — skip
