@@ -74,6 +74,21 @@ extern NSString *const kPrefInSelThreshold;      // NSInteger, default 1024
 extern NSString *const kPrefFuncListUseXML;      // BOOL, default YES — use XML parsers vs hardcoded regex
 extern NSString *const kPrefToolbarIconScale;    // double, 0.50/0.75/0.90/1.00/1.25/1.50, default 1.0 — restart required
 
+// Performance / Large File Restriction (Phase 1 of huge-file support).
+// Mirrors the Windows NPP "Performance" preferences pane. When a file size
+// crosses kPrefLargeFileSizeMB AND kPrefLargeFileEnabled is YES, the editor
+// enters "large file mode": syntax highlighting + undo are off (existing
+// behavior) and the per-feature Allow* toggles below decide whether
+// auto-complete, smart-highlight, brace-match, and URL-clickable still run.
+extern NSString *const kPrefLargeFileEnabled;            // BOOL, default YES
+extern NSString *const kPrefLargeFileSizeMB;             // NSInteger MB, 1–2046, default 200
+extern NSString *const kPrefLargeFileNoWrap;             // BOOL, default YES — turn off word-wrap when large
+extern NSString *const kPrefLargeFileAllowAutoComplete;  // BOOL, default NO  — keep autocomplete when large
+extern NSString *const kPrefLargeFileAllowSmartHilite;   // BOOL, default NO  — keep smart highlight when large
+extern NSString *const kPrefLargeFileAllowBraceMatch;    // BOOL, default NO  — keep brace match when large
+extern NSString *const kPrefLargeFileAllowURLClick;      // BOOL, default NO  — keep URL hyperlinks when large
+extern NSString *const kPrefLargeFileSuppress2GBWarning; // BOOL, default NO  — skip warning above 2 GB
+
 // Theme / Style Configurator keys (hex color strings "#RRGGBB")
 extern NSString *const kPrefThemePreset;    // preset name or "Custom"
 extern NSString *const kPrefStyleFg;        // default foreground

@@ -271,8 +271,18 @@ static inline NSStringEncoding nppEnc(CFStringEncoding cf) {
     return CFStringConvertEncodingToNSStringEncoding(cf);
 }
 
-// Files larger than this get a warning + large-file mode (no syntax, no undo).
-static const NSUInteger kLargeFileThreshold = 50 * 1024 * 1024; // 50 MB
+// Files larger than the threshold get a warning + large-file mode (no syntax,
+// no undo, plus per-feature gates from Performance prefs). When the user has
+// disabled "Enable Large File Restriction" entirely, returns SIZE_MAX so no
+// file ever crosses the threshold.
+static NSUInteger nppLargeFileThreshold(void) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    if (![ud boolForKey:kPrefLargeFileEnabled]) return NSUIntegerMax;
+    NSInteger mb = [ud integerForKey:kPrefLargeFileSizeMB];
+    if (mb < 1)    mb = 1;
+    if (mb > 2046) mb = 2046;
+    return (NSUInteger)mb * 1024UL * 1024UL;
+}
 
 @implementation EditorView {
     BOOL    _isModified;
@@ -418,24 +428,32 @@ static const NSUInteger kLargeFileThreshold = 50 * 1024 * 1024; // 50 MB
     NSUInteger fileSize = 0;
     if (attrs) fileSize = (NSUInteger)[attrs[NSFileSize] unsignedLongLongValue];
 
-    BOOL large = (fileSize > kLargeFileThreshold);
+    BOOL large = (fileSize > nppLargeFileThreshold());
     if (large) {
-        NSString *sizeMB = [NSString stringWithFormat:@"%.0f MB",
-                            fileSize / (1024.0 * 1024.0)];
-        NSAlert *alert = [[NSAlert alloc] init];
-        alert.messageText = @"Large File Warning";
-        alert.informativeText = [NSString stringWithFormat:
-            @"This file is %@. Opening it will disable syntax highlighting "
-            @"and undo history to keep the app responsive.\n\n"
-            @"Do you want to continue?", sizeMB];
-        [alert addButtonWithTitle:@"Open Anyway"];
-        [alert addButtonWithTitle:@"Cancel"];
-        alert.alertStyle = NSAlertStyleWarning;
-        if ([alert runModal] != NSAlertFirstButtonReturn) {
-            if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain
-                                                    code:NSUserCancelledError
-                                                userInfo:nil];
-            return NO;
+        // The 2 GB suppress-warning toggle silences the dialog ONLY for files
+        // ≥2 GB — smaller large files still prompt the user, since the prompt
+        // there is more about "you're about to lose syntax/undo" than
+        // "this might hang the app." Matches Windows NPP behavior.
+        BOOL suppress2GB = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileSuppress2GBWarning]
+                           && fileSize >= (2ULL * 1024 * 1024 * 1024);
+        if (!suppress2GB) {
+            NSString *sizeMB = [NSString stringWithFormat:@"%.0f MB",
+                                fileSize / (1024.0 * 1024.0)];
+            NSAlert *alert = [[NSAlert alloc] init];
+            alert.messageText = @"Large File Warning";
+            alert.informativeText = [NSString stringWithFormat:
+                @"This file is %@. Opening it will disable syntax highlighting "
+                @"and undo history to keep the app responsive.\n\n"
+                @"Do you want to continue?", sizeMB];
+            [alert addButtonWithTitle:@"Open Anyway"];
+            [alert addButtonWithTitle:@"Cancel"];
+            alert.alertStyle = NSAlertStyleWarning;
+            if ([alert runModal] != NSAlertFirstButtonReturn) {
+                if (error) *error = [NSError errorWithDomain:NSCocoaErrorDomain
+                                                        code:NSUserCancelledError
+                                                    userInfo:nil];
+                return NO;
+            }
         }
     }
 
@@ -529,6 +547,13 @@ static const NSUInteger kLargeFileThreshold = 50 * 1024 * 1024; // 50 MB
         // Disable syntax highlighting and undo for large files to stay responsive.
         [self setLanguage:@""];
         [_scintillaView message:SCI_SETUNDOCOLLECTION wParam:0 lParam:0];
+        // Performance pref — turn off word wrap for large files. Word-wrap on
+        // a multi-million-line buffer is dominated by wrap-recompute time, so
+        // even users who normally wrap usually want it off for huge files.
+        if ([[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileNoWrap]) {
+            _wordWrapEnabled = NO;
+            [_scintillaView message:SCI_SETWRAPMODE wParam:SC_WRAP_NONE];
+        }
     } else {
         [self setLanguage:lang];
         // Re-enable undo in case this tab was previously in large-file mode.
@@ -2919,6 +2944,10 @@ static const int kIndicatorIncSearch = 28; // Scintilla indicator slot for incre
 // Fold block highlighting (red ⊞/⊟ symbols and connecting lines for the enclosing block)
 // is handled automatically by SCI_MARKERENABLEHIGHLIGHT — no manual marker work needed.
 - (void)updateBraceHighlight {
+    // Performance pref — skip brace match for large files unless explicitly allowed.
+    if (_largeFileMode &&
+        ![[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileAllowBraceMatch]) return;
+
     ScintillaView *sci = _scintillaView;
     sptr_t caretPos = [sci message:SCI_GETCURRENTPOS];
     sptr_t docLen   = [sci message:SCI_GETLENGTH];
@@ -2968,6 +2997,11 @@ static const int kIndicatorIncSearch = 28; // Scintilla indicator slot for incre
 
     // Bail if smart highlighting is disabled
     if (![[NSUserDefaults standardUserDefaults] boolForKey:kPrefSmartHighlight]) return;
+
+    // Performance pref — skip smart highlight for large files unless explicitly allowed.
+    // Walking a multi-million-line buffer for selection-text matches dominates wall time.
+    if (_largeFileMode &&
+        ![[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileAllowSmartHilite]) return;
 
     sptr_t selStart = [sci message:SCI_GETSELECTIONSTART];
     sptr_t selEnd   = [sci message:SCI_GETSELECTIONEND];
@@ -3406,6 +3440,11 @@ static NSSet<NSString *> *_cLikeLanguages() {
 }
 
 - (void)updateAutoComplete {
+    // Performance pref — skip word-completion suggestions for large files unless allowed.
+    // The autocomplete word-list build walks the whole document.
+    if (_largeFileMode &&
+        ![[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileAllowAutoComplete]) return;
+
     // Honour configurable minimum-character threshold (default 1, matching NPP Windows)
     NSInteger minChars = [[NSUserDefaults standardUserDefaults]
                           integerForKey:kPrefAutoCompleteMinChars];
@@ -4581,6 +4620,14 @@ static const unsigned int kSCI_GetBidirectional = 2708;
 #pragma mark - Auto-Completion Actions
 
 - (void)triggerWordCompletion:(id)sender {
+    // Performance pref — manual completion still respects the large-file gate.
+    // Window scan is bounded (500 KB ± caret) so it's not catastrophic, but the
+    // user has explicitly opted out of completion for huge files.
+    if (_largeFileMode &&
+        ![[NSUserDefaults standardUserDefaults] boolForKey:kPrefLargeFileAllowAutoComplete]) {
+        NSBeep();
+        return;
+    }
     // Manual Ctrl+Enter: force word completion even when auto-complete is off; min prefix = 1
     [self _showWordCompletionWithMinPrefix:1 beepOnEmpty:YES];
 }

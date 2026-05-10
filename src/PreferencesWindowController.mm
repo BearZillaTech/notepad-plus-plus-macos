@@ -64,6 +64,16 @@ NSString *const kPrefInSelThreshold      = @"inSelThreshold";
 NSString *const kPrefFuncListUseXML      = @"funcListUseXML";
 NSString *const kPrefToolbarIconScale    = @"toolbarIconScale";
 
+// Performance / Large File Restriction (issue #75-style; mirrors Windows NPP)
+NSString *const kPrefLargeFileEnabled            = @"largeFileEnabled";
+NSString *const kPrefLargeFileSizeMB             = @"largeFileSizeMB";
+NSString *const kPrefLargeFileNoWrap             = @"largeFileNoWrap";
+NSString *const kPrefLargeFileAllowAutoComplete  = @"largeFileAllowAutoComplete";
+NSString *const kPrefLargeFileAllowSmartHilite   = @"largeFileAllowSmartHilite";
+NSString *const kPrefLargeFileAllowBraceMatch    = @"largeFileAllowBraceMatch";
+NSString *const kPrefLargeFileAllowURLClick      = @"largeFileAllowURLClick";
+NSString *const kPrefLargeFileSuppress2GBWarning = @"largeFileSuppress2GBWarning";
+
 // Theme / Style Configurator keys
 NSString *const kPrefThemePreset        = @"themePreset";
 NSString *const kPrefStyleFg            = @"styleFg";
@@ -175,6 +185,15 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         kPrefFuncListUseXML:       @YES,
         kPrefToolbarIconScale:     @1.0,  // 0.50/0.75/0.90/1.00/1.25/1.50 — restart required
         kPrefDarkMode:             @0,   // 0=Auto, 1=Light, 2=Dark
+        // Performance / Large File Restriction
+        kPrefLargeFileEnabled:            @YES,
+        kPrefLargeFileSizeMB:             @200,  // 1–2046; matches Windows NPP default
+        kPrefLargeFileNoWrap:             @YES,
+        kPrefLargeFileAllowAutoComplete:  @NO,
+        kPrefLargeFileAllowSmartHilite:   @NO,
+        kPrefLargeFileAllowBraceMatch:    @NO,
+        kPrefLargeFileAllowURLClick:      @NO,
+        kPrefLargeFileSuppress2GBWarning: @NO,
     }];
     // Force-upgrade any stale @NO value stored by earlier builds.
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -236,6 +255,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         [loc translate:@"Backup"],
         [loc translate:@"Auto-Completion"],
         [loc translate:@"Searching"],
+        [loc translate:@"Performance"],
         [loc translate:@"MISC."],
     ]];
     // Invalidate cached page views so they rebuild with new translations
@@ -283,10 +303,8 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         [[NppLocalizer shared] translate:@"Backup"],
         [[NppLocalizer shared] translate:@"Auto-Completion"],
         [[NppLocalizer shared] translate:@"Searching"],
+        [[NppLocalizer shared] translate:@"Performance"],
         [[NppLocalizer shared] translate:@"MISC."],
-    // Future pages can be added here
-    // @"Performance",
-    // @"Delimiter",
     ]];
     _pageViews = [NSMutableDictionary dictionary];
 
@@ -516,6 +534,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
     if ([name isEqualToString:[loc translate:@"Backup"]])           return [self _buildBackupPage];
     if ([name isEqualToString:[loc translate:@"Auto-Completion"]])  return [self _buildAutoCompletionPage];
     if ([name isEqualToString:[loc translate:@"Searching"]])        return [self _buildSearchingPage];
+    if ([name isEqualToString:[loc translate:@"Performance"]])      return [self _buildPerformancePage];
     if ([name isEqualToString:[loc translate:@"MISC."]])            return [self _buildMiscPage];
     return nil;
 }
@@ -1391,6 +1410,76 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
 
 // Search Engine page removed — merged into Searching
 
+#pragma mark - Performance Page
+
+// Phase 1 of huge-file support — mirrors the Windows NPP "Performance" pane.
+// All controls are gated by the master "Enable Large File Restriction" toggle:
+// when off, the threshold and feature toggles below are inactive and files of
+// any size open with full features. When on, files larger than the threshold
+// enter "large file mode": syntax + undo are off (existing behavior in
+// EditorView.loadFileAtPath:) and the Allow* toggles decide which other
+// features remain active.
+- (NSView *)_buildPerformancePage {
+    NSView *v = [[NSView alloc] init];
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    NppLocalizer *loc = [NppLocalizer shared];
+    CGFloat y = 380;
+
+    NSTextField *header = [NSTextField labelWithString:[loc translate:@"Large File Restriction"]];
+    header.frame = NSMakeRect(20, y, 400, 20);
+    header.font = [NSFont boldSystemFontOfSize:13];
+    [v addSubview:header];
+    y -= 30;
+
+    NSButton *enable = [NSButton checkboxWithTitle:[loc translate:@"Enable Large File Restriction (no syntax highlighting)"]
+                                            target:self action:@selector(prefChanged:)];
+    enable.frame = NSMakeRect(20, y, 480, 20);
+    enable.state = [ud boolForKey:kPrefLargeFileEnabled] ? NSControlStateValueOn : NSControlStateValueOff;
+    enable.tag = 1400;
+    [v addSubview:enable];
+    y -= 30;
+
+    NSTextField *sizeLabel = [NSTextField labelWithString:[loc translate:@"Define Large File Size:"]];
+    sizeLabel.frame = NSMakeRect(40, y, 180, 20);
+    [v addSubview:sizeLabel];
+
+    NSTextField *sizeField = [[NSTextField alloc] initWithFrame:NSMakeRect(225, y-2, 70, 22)];
+    sizeField.integerValue = [ud integerForKey:kPrefLargeFileSizeMB];
+    sizeField.tag = 1401; sizeField.target = self; sizeField.action = @selector(prefChanged:);
+    [v addSubview:sizeField];
+
+    NSTextField *sizeUnit = [NSTextField labelWithString:@"MB    (1 - 2046)"];
+    sizeUnit.frame = NSMakeRect(305, y, 200, 20);
+    [v addSubview:sizeUnit];
+    y -= 36;
+
+    NSArray *checks = @[
+        @[[loc translate:@"Deactivate Word Wrap globally"],   @1402, kPrefLargeFileNoWrap],
+        @[[loc translate:@"Allow Auto-Completion"],           @1403, kPrefLargeFileAllowAutoComplete],
+        @[[loc translate:@"Allow Smart Highlighting"],        @1404, kPrefLargeFileAllowSmartHilite],
+        @[[loc translate:@"Allow Brace Match"],               @1405, kPrefLargeFileAllowBraceMatch],
+        @[[loc translate:@"Allow URL Clickable Link"],        @1406, kPrefLargeFileAllowURLClick],
+    ];
+    for (NSArray *def in checks) {
+        NSButton *chk = [NSButton checkboxWithTitle:def[0] target:self action:@selector(prefChanged:)];
+        chk.frame = NSMakeRect(40, y, 460, 20);
+        chk.state = [ud boolForKey:def[2]] ? NSControlStateValueOn : NSControlStateValueOff;
+        chk.tag = [def[1] integerValue];
+        [v addSubview:chk];
+        y -= 28;
+    }
+    y -= 12;
+
+    NSButton *suppress = [NSButton checkboxWithTitle:[loc translate:@"Suppress warning when opening ≥2GB files"]
+                                              target:self action:@selector(prefChanged:)];
+    suppress.frame = NSMakeRect(20, y, 460, 20);
+    suppress.state = [ud boolForKey:kPrefLargeFileSuppress2GBWarning] ? NSControlStateValueOn : NSControlStateValueOff;
+    suppress.tag = 1407;
+    [v addSubview:suppress];
+
+    return v;
+}
+
 #pragma mark - MISC. Page
 
 - (NSView *)_buildMiscPage {
@@ -1562,6 +1651,24 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
         case 1204: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefPanelKeepState]; break;
         case 1205: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefFuncListUseXML]; break;
         case 1206: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefPluginSplitViewRouting]; break;
+        // Performance / Large File Restriction (1400-1407 — 1300s collide with Indentation)
+        case 1400: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileEnabled]; break;
+        case 1401: {
+            // Clamp threshold to the valid 1–2046 MB range so users can't store
+            // a nonsensical value via the text field.
+            NSInteger mb = [(NSTextField *)sender integerValue];
+            if (mb < 1)    mb = 1;
+            if (mb > 2046) mb = 2046;
+            [ud setInteger:mb forKey:kPrefLargeFileSizeMB];
+            [(NSTextField *)sender setIntegerValue:mb];  // reflect clamp in UI
+            break;
+        }
+        case 1402: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileNoWrap]; break;
+        case 1403: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileAllowAutoComplete]; break;
+        case 1404: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileAllowSmartHilite]; break;
+        case 1405: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileAllowBraceMatch]; break;
+        case 1406: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileAllowURLClick]; break;
+        case 1407: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileSuppress2GBWarning]; break;
         case 1207: {
             // Toolbar icon scale — restart required.
             static const double scales[6] = {0.50, 0.75, 0.90, 1.00, 1.25, 1.50};
