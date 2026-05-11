@@ -51,7 +51,7 @@
     [_extMap removeAllObjects];
 
     // Try user langs.xml first, fall back to bundled langs.model.xml
-    NSString *userPath = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/langs.xml"];
+    NSString *userPath = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/langs.xml"];
     NSData *data = [[NSFileManager defaultManager] fileExistsAtPath:userPath]
                    ? [NSData dataWithContentsOfFile:userPath] : nil;
     if (!data) {

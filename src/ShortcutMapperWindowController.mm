@@ -368,7 +368,7 @@ NSNotificationName const NPPShortcutsChangedNotification = @"NPPShortcutsChanged
     }
     // Mark entries that have overrides in shortcuts.xml and restore their shortcuts
     // from the XML (macOS may silently clear duplicate keyEquivalents on live menu items)
-    NSString *scPath = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/shortcuts.xml"];
+    NSString *scPath = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
     NSData *scData = [NSData dataWithContentsOfFile:scPath];
     if (scData) {
         NSXMLDocument *scDoc = [[NSXMLDocument alloc] initWithData:scData options:0 error:nil];
@@ -481,7 +481,7 @@ NSNotificationName const NPPShortcutsChangedNotification = @"NPPShortcutsChanged
 
 - (void)_loadMacroEntries {
     _macroEntries = [NSMutableArray array];
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/shortcuts.xml"];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (!data) return;
     NSXMLDocument *doc = [[NSXMLDocument alloc] initWithData:data options:0 error:nil];
@@ -508,7 +508,7 @@ NSNotificationName const NPPShortcutsChangedNotification = @"NPPShortcutsChanged
     _runCmdEntries = [NSMutableArray array];
 
     // Load from shortcuts.xml <UserDefinedCommands> only (matches Windows behavior)
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/shortcuts.xml"];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
     NSData *data = [NSData dataWithContentsOfFile:path];
 
     // If no UserDefinedCommands exist in shortcuts.xml, create defaults
@@ -535,7 +535,7 @@ NSNotificationName const NPPShortcutsChangedNotification = @"NPPShortcutsChanged
         }
     }
 
-    // Default entries come from the bundled shortcuts.xml (copied to ~/.notepad++/ on first run)
+    // Default entries come from the bundled shortcuts.xml (copied to ~/.nextpad++/ on first run)
     NSLog(@"[ShortcutMapper] Run commands: %lu entries", (unsigned long)_runCmdEntries.count);
 }
 
@@ -664,7 +664,7 @@ NSNotificationName const NPPShortcutsChangedNotification = @"NPPShortcutsChanged
         {"SCI_STUTTEREDPAGEDOWNEXTEND",2438,NO, NO,  NO,  0},
     };
     // Read existing overrides from shortcuts.xml
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/shortcuts.xml"];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
     NSData *xmlData = [NSData dataWithContentsOfFile:path];
     NSXMLDocument *xmlDoc = xmlData ? [[NSXMLDocument alloc] initWithData:xmlData options:0 error:nil] : nil;
     NSArray *xmlScintKeys = xmlDoc ? [xmlDoc nodesForXPath:@"//ScintillaKeys/ScintKey" error:nil] : @[];
@@ -1218,7 +1218,7 @@ NSNotificationName const NPPShortcutsChangedNotification = @"NPPShortcutsChanged
 }
 
 - (void)_saveToShortcutsXML {
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/shortcuts.xml"];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
 
     // Read existing shortcuts.xml — modify in-place to preserve comments and structure
     NSData *existingData = [NSData dataWithContentsOfFile:path];

@@ -1912,7 +1912,7 @@ static int vkToScintillaKey(int vk) {
 }
 
 - (void)applyScintillaKeyOverrides {
-    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/shortcuts.xml"];
+    NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
     NSData *data = [NSData dataWithContentsOfFile:path];
     if (!data) return;
 

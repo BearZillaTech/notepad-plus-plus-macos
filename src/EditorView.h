@@ -15,7 +15,7 @@ extern NSNotificationName const EditorViewDidGainFocusNotification;
 /// invocations gated to the panel-visible state (issue #76).
 extern NSNotificationName const EditorViewDidSaveNotification;
 
-/// Wraps ScintillaView and provides Notepad++-style editor functionality.
+/// Wraps ScintillaView and provides Nextpad++-style editor functionality.
 @interface EditorView : NSView <ScintillaNotificationProtocol>
 
 @property (nonatomic, readonly) ScintillaView *scintillaView;
@@ -24,7 +24,7 @@ extern NSNotificationName const EditorViewDidSaveNotification;
 /// Unique 1-based index for untitled tabs — mirrors NPP's per-buffer ID.
 @property (nonatomic, readonly) NSInteger untitledIndex;
 
-/// Path to the auto-backup copy in ~/.notepad++/backup/ (nil if never backed up).
+/// Path to the auto-backup copy in ~/.nextpad++/backup/ (nil if never backed up).
 @property (nonatomic, copy, nullable) NSString *backupFilePath;
 
 /// Restore the untitled index from a saved session (keeps tab name consistent).

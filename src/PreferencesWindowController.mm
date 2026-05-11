@@ -588,7 +588,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
     NSTextField *hint = [NSTextField wrappingLabelWithString:
         [NSString stringWithFormat:@"%@\n%@",
          [[NppLocalizer shared] translate:@"Additional language files (.xml) can be placed in:"],
-         @"~/Library/Application Support/Notepad++/localization/"]];
+         @"~/Library/Application Support/Nextpad++/localization/"]];
     hint.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
     hint.textColor = NSColor.secondaryLabelColor;
     hint.frame = NSMakeRect(20, y - 16, 400, 44);
@@ -1343,7 +1343,7 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
     y -= 20;
 
     NSTextField *backupPath = [NSTextField labelWithString:
-        [NSHomeDirectory() stringByAppendingPathComponent:@".notepad++/backup/"]];
+        [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/backup/"]];
     backupPath.frame = NSMakeRect(20, y, 400, 20);
     backupPath.font = [NSFont monospacedSystemFontOfSize:11 weight:NSFontWeightRegular];
     [v addSubview:backupPath];
@@ -1818,7 +1818,7 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
             NSAlert *alert = [[NSAlert alloc] init];
             alert.messageText = [[NppLocalizer shared] translate:@"Toolbar icon size changed"];
             alert.informativeText = [[NppLocalizer shared] translate:
-                @"The new toolbar icon size will take effect the next time Notepad++ launches."];
+                @"The new toolbar icon size will take effect the next time Nextpad++ launches."];
             [alert addButtonWithTitle:[[NppLocalizer shared] translate:@"OK"]];
             [alert runModal];
             break;

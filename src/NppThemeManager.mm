@@ -262,7 +262,7 @@ static NSDictionary<NSString *, NSString *> *toolbarIconMapping(void) {
     // FindReplacePanel + IncrementalSearchBar). CGColor resolution happens
     // against the current drawing appearance, NOT against NSApp.appearance,
     // so when macOS is in Dark mode but the user has chosen Light mode in
-    // Notepad++, the dark variant of windowBackgroundColor was baked into
+    // Nextpad++, the dark variant of windowBackgroundColor was baked into
     // the layer at view-creation time. Static RGB makes the resolution
     // deterministic and matches the existing pattern in tabBarBackground.
     // 0xECECEC ≈ stock macOS Aqua window chrome shade.
