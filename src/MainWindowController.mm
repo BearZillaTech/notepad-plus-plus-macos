@@ -8434,10 +8434,10 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
 #pragma mark - Help / Debug
 
 - (void)openNppHome:(id)sender {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://notepad-plus-plus-mac.org"]];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://nextpad.org"]];
 }
 - (void)openNppProjectPage:(id)sender {
-    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/notepad-plus-plus-mac"]];
+    [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://github.com/nextpad-plus-plus"]];
 }
 - (void)openNppManual:(id)sender {
     [[NSWorkspace sharedWorkspace] openURL:[NSURL URLWithString:@"https://npp-user-manual.org"]];
