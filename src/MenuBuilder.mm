@@ -976,8 +976,10 @@ static NSMenu *buildLanguageMenu() {
     addSep(helpMenu);
     [helpMenu addItem:item(@"Nextpad++ macOS Home",              @selector(openNppHome:),        @"")];
     [helpMenu addItem:item(@"Nextpad++ macOS Project Page",      @selector(openNppProjectPage:), @"")];
-    [helpMenu addItem:item(@"Nextpad++ Online User Manual",@selector(openNppManual:),      @"")];
-    [helpMenu addItem:item(@"Nextpad++ Community (Forum)", @selector(openNppForum:),       @"")];
+    [helpMenu addItem:item(@"Online User Manual",@selector(openNppManual:),      @"")];
+    // Commented out — community forum URL not yet established for the
+    // rebranded project. Re-enable once a forum is set up.
+    // [helpMenu addItem:item(@"Nextpad++ Community (Forum)", @selector(openNppForum:),       @"")];
     addSep(helpMenu);
     [helpMenu addItem:item(@"Debug Info…", @selector(showDebugInfo:), @"")];
 }
