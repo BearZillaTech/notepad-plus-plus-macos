@@ -7987,15 +7987,29 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
         @"-settingsDir=\"/your settings dir/\": Override the default settings dir\n"
         @"-openFoldersAsWorkspace: Open filePath of folder(s) as workspace\n"
         @"-titleAdd=\"string\": Add string to Nextpad++ title bar\n"
-        @"filePath: File or folder name to open (absolute or relative path name)\n\n"
+        @"filePath: File or folder name to open (absolute or relative path name).\n"
+        @"  Passing a folder opens every file directly inside it (top level "
+        @"only — subfolders and hidden files are skipped). Use -r to recurse "
+        @"into subfolders, or -openFoldersAsWorkspace to open it as a "
+        @"workspace instead.\n\n"
         @"Note (macOS): most flags above work as documented. Not yet "
         @"implemented: -L, -settingsDir, and the Ghost-typing flags "
         @"(-qn / -qt / -qf / -qSpeed). The -fullReadOnly and "
         @"-fullReadOnlySavingForbidden flags currently behave like -ro.\n\n"
         @"To use the 'nextpad++' command shown above, run "
-        @"App menu > 'Install nextpad++ Command Line Tool…'. Without "
-        @"the symlink you can still pass arguments via:\n"
-        @"  open -a Nextpad++ --args -n42 file.txt\n"
+        @"App menu > 'Install nextpad++ Command Line Tool…'.\n\n"
+        @"Same-instance behaviour:\n"
+        @"• Passing files only — e.g. 'nextpad++ a.txt b.txt' — opens them "
+        @"as new tabs in the Nextpad++ window that is already running.\n"
+        @"• Passing a folder — e.g. 'nextpad++ myfolder' — opens that "
+        @"folder's top-level files as tabs in the running window. Opening "
+        @"more than 20 files at once asks for confirmation first.\n"
+        @"• Passing any option flag (-n42, -lcpp, …) starts a fresh "
+        @"Nextpad++ instance: flags are only applied at launch and cannot "
+        @"be delivered to an already-running window.\n\n"
+        @"Without the installed command you can still launch via:\n"
+        @"  open -a Nextpad++ file.txt          (opens in running instance)\n"
+        @"  open -a Nextpad++ --args -n42 file.txt   (flags — fresh launch)\n"
         @"or invoke the binary directly:\n"
         @"  /Applications/Nextpad++.app/Contents/MacOS/Nextpad++ file.txt";
 
@@ -8010,7 +8024,18 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
     btnOK.action = @selector(stopModal);
     [panel.contentView addSubview:btnOK];
 
+    // The X (close) button doesn't call -stopModal, so closing the panel
+    // that way would leave the modal session running with no visible
+    // window — every subsequent click then beeps. Observe the close and
+    // end the modal session ourselves.
+    id closeObserver = [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSWindowWillCloseNotification
+                    object:panel
+                     queue:nil
+                usingBlock:^(NSNotification *note) { [NSApp stopModal]; }];
+
     [NSApp runModalForWindow:panel];
+    [[NSNotificationCenter defaultCenter] removeObserver:closeObserver];
     [panel orderOut:nil];
 }
 
@@ -8040,21 +8065,31 @@ static NSString *_makeCLIScriptForApp(NSString *appPath) {
          "# 'Install nextpad++ Command Line Tool…' menu item to update.\n"
          "APP=%@\n"
          "\n"
-         "# Convert relative file paths to absolute. `open --args` runs the\n"
-         "# app from / so unqualified paths would otherwise resolve wrong.\n"
-         "args=()\n"
+         "# Split arguments into option flags (-…) and file/folder paths.\n"
+         "# Relative paths are made absolute against the terminal's PWD\n"
+         "# because `open` launches the app from /.\n"
+         "flags=()\n"
+         "files=()\n"
          "for arg in \"$@\"; do\n"
          "    case \"$arg\" in\n"
-         "        -*) args+=(\"$arg\") ;;\n"
-         "        /*) args+=(\"$arg\") ;;\n"
-         "        *)  args+=(\"$PWD/$arg\") ;;\n"
+         "        -*) flags+=(\"$arg\") ;;\n"
+         "        /*) files+=(\"$arg\") ;;\n"
+         "        *)  files+=(\"$PWD/$arg\") ;;\n"
          "    esac\n"
          "done\n"
          "\n"
-         "if [ ${#args[@]} -eq 0 ]; then\n"
-         "    open -a \"$APP\"\n"
+         "if [ ${#flags[@]} -gt 0 ]; then\n"
+         "    # Option flags can only reach a freshly launched process —\n"
+         "    # `open --args` is silently dropped when the app is already\n"
+         "    # running. Files ride behind --args so a fresh instance gets\n"
+         "    # them too.\n"
+         "    open -a \"$APP\" --args \"${flags[@]}\" \"${files[@]}\"\n"
+         "elif [ ${#files[@]} -gt 0 ]; then\n"
+         "    # Files only: pass them as `open` document arguments so an\n"
+         "    # already-running instance opens them via application:openFiles:.\n"
+         "    open -a \"$APP\" \"${files[@]}\"\n"
          "else\n"
-         "    open -a \"$APP\" --args \"${args[@]}\"\n"
+         "    open -a \"$APP\"\n"
          "fi\n",
         _shellQuote(appPath)];
 }
@@ -8089,12 +8124,13 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
     NSFileManager *fm = [NSFileManager defaultManager];
     NSString *script = _makeCLIScriptForApp(appPath);
 
-    // Idempotency: existing file already targets this same .app?
+    // Idempotency: existing file is byte-identical to what we'd write?
+    // Comparing the whole script (not just the APP= line) means an
+    // upgrade that changes the wrapper logic still reinstalls.
     NSString *existing = [NSString stringWithContentsOfFile:systemTarget
                                                    encoding:NSUTF8StringEncoding
                                                       error:nil];
-    NSString *appLine = [NSString stringWithFormat:@"APP=%@", _shellQuote(appPath)];
-    if (existing && [existing containsString:appLine]) {
+    if (existing && [existing isEqualToString:script]) {
         NSAlert *a = [[NSAlert alloc] init];
         a.messageText = [[NppLocalizer shared] translate:@"Already installed"];
         a.informativeText = [NSString stringWithFormat:@"nextpad++ is already installed at %@\n\nUsage:\n  nextpad++ file.txt\n  nextpad++ -n42 main.cpp", systemTarget];
