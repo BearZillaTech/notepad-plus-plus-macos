@@ -877,6 +877,33 @@ static NSToolbarItemIdentifier const kTBSep7 = @"TB_Sep7";
 static NSToolbarItemIdentifier const kTBSep8 = @"TB_Sep8";
 static NSToolbarItemIdentifier const kTBSep9 = @"TB_Sep9";
 static NSToolbarItemIdentifier const kTBTabControls = @"TB_TabControls"; // +  ▾  × right-aligned
+
+// NSUserDefaults key: array of English title-keys of the built-in side
+// panels that were open at last save (issue #132 — restore on launch).
+static NSString *const kOpenSidePanelsKey = @"OpenSidePanels";
+
+// Built-in side panels that participate in open-state persistence, mapped
+// from PanelFrame title-key → the action selector that toggles them open.
+// The Git ("Source Control") panel is deliberately excluded — restoring it
+// on launch would spawn git. Search Results is a bottom panel (not in the
+// side-panel host) and plugin panels carry unknown title-keys, so both are
+// naturally excluded by not appearing here.
+static NSDictionary<NSString *, NSString *> *_restorableSidePanels(void) {
+    static NSDictionary *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        map = @{
+            @"Document List":               @"showDocumentList:",
+            @"Clipboard History":           @"showClipboardHistory:",
+            @"Document Map":                @"showDocumentMap:",
+            @"Function List":               @"showFunctionList:",
+            @"Folder as Workspace":         @"showFolderTreePanel:",
+            @"Project Panel":               @"showProjectPanel1:",
+            @"ASCII Codes Insertion Panel": @"characterPanel:",
+        };
+    });
+    return map;
+}
 // Grouped toolbar items — each group becomes a single NSToolbarItem with tight icon packing
 static NSToolbarItemIdentifier const kTBGroup1  = @"TB_G1";  // file ops
 static NSToolbarItemIdentifier const kTBGroup2  = @"TB_G2";  // clipboard
@@ -1424,6 +1451,7 @@ static NSDictionary<NSString *, NSArray *> *toolbarGroupMap(void) {
      DocumentListPanelDelegate, CharacterPanelDelegate,
      SidePanelHostDelegate,
      NSMenuDelegate>
+- (void)_saveOpenSidePanels;
 @end
 
 @implementation MainWindowController {
@@ -1548,7 +1576,7 @@ static NSDictionary<NSString *, NSArray *> *toolbarGroupMap(void) {
         // Disable macOS automatic window state restoration — we use our own session system
         window.restorable = NO;
         _showLineNumbers = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefShowLineNumbers];
-        _showIndentGuides = YES; // indent guides on by default
+        _showIndentGuides = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefShowIndentGuides];
         window.delegate = self;
         [self buildToolbar];
         [self buildContentView];
@@ -4024,6 +4052,47 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
                          ofDividerAtIndex:0];
     }
     [self _refreshToolbarStates];
+    [self _saveOpenSidePanels];
+}
+
+// Persist the set of open built-in side panels (issue #132). Called from
+// _setPanelVisible: on every open/close so the stored set survives a
+// crash, not just a clean quit. Plugin panels and the Git panel are
+// filtered out via the _restorableSidePanels() whitelist.
+- (void)_saveOpenSidePanels {
+    if (!_panelTitleKeys) return;
+    NSDictionary *whitelist = _restorableSidePanels();
+    NSMutableArray<NSString *> *openKeys = [NSMutableArray array];
+    for (NSView *panel in [[_panelTitleKeys keyEnumerator] allObjects]) {
+        NSString *key = [_panelTitleKeys objectForKey:panel];
+        if (key && whitelist[key]) [openKeys addObject:key];
+    }
+    [[NSUserDefaults standardUserDefaults] setObject:openKeys forKey:kOpenSidePanelsKey];
+}
+
+// Re-open the side panels that were open at last quit (issue #132).
+// Gated on the "Remember panel visibility" preference; invoked once by
+// AppDelegate after the primary window is shown, so secondary windows
+// (Window > New Window) do not inherit the restore.
+- (void)restoreSidePanels {
+    if (![[NSUserDefaults standardUserDefaults] boolForKey:kPrefPanelKeepState]) return;
+    NSArray *saved = [[NSUserDefaults standardUserDefaults] arrayForKey:kOpenSidePanelsKey];
+    if (![saved isKindOfClass:[NSArray class]]) return;
+
+    NSDictionary<NSString *, NSString *> *whitelist = _restorableSidePanels();
+    for (NSString *key in saved) {
+        if (![key isKindOfClass:[NSString class]]) continue;
+        NSString *selName = whitelist[key];
+        if (!selName) continue;                       // unknown / plugin / Git
+        SEL sel = NSSelectorFromString(selName);
+        if (![self respondsToSelector:sel]) continue;
+        // The show selectors toggle; at launch the panel is closed, so a
+        // single call opens it.
+        #pragma clang diagnostic push
+        #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+        [self performSelector:sel withObject:nil];
+        #pragma clang diagnostic pop
+    }
 }
 
 // Re-apply localized titles to every currently-open panel. Called on
@@ -5763,8 +5832,10 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
 
 - (void)toggleIndentGuides:(id)sender {
     _showIndentGuides = !_showIndentGuides;
-    ScintillaView *sci = [self currentEditor].scintillaView;
-    [sci message:SCI_SETINDENTATIONGUIDES wParam:_showIndentGuides ? SC_IV_LOOKBOTH : SC_IV_NONE];
+    [[NSUserDefaults standardUserDefaults] setBool:_showIndentGuides forKey:kPrefShowIndentGuides];
+    // Apply to every open editor (all panes / windows) — applyPreferencesFromDefaults
+    // re-reads kPrefShowIndentGuides and updates Scintilla.
+    [[NSNotificationCenter defaultCenter] postNotificationName:@"NPPPreferencesChanged" object:nil];
     [self _refreshToolbarStates];
 }
 

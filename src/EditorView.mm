@@ -1476,8 +1476,9 @@ static NSColor *nppColorFromHex(NSString *hex) {
     if (gsWhiteSpace.fgColor)
         [sci message:SCI_SETWHITESPACEFORE wParam:1 lParam:sciColor(gsWhiteSpace.fgColor)];
 
-    // Indentation guides
-    [sci message:SCI_SETINDENTATIONGUIDES wParam:SC_IV_LOOKBOTH];
+    // Indentation guides — honour the persisted kPrefShowIndentGuides toggle.
+    BOOL showGuides = [[NSUserDefaults standardUserDefaults] boolForKey:kPrefShowIndentGuides];
+    [sci message:SCI_SETINDENTATIONGUIDES wParam:(showGuides ? SC_IV_LOOKBOTH : SC_IV_NONE)];
     [sci message:SCI_SETEOLMODE wParam:SC_EOL_LF];
     NPPStyleEntry *gsIndent = [store globalStyleNamed:@"Indent guideline style"];
     if (gsIndent.fgColor) [sci setColorProperty:SCI_STYLESETFORE parameter:37 value:gsIndent.fgColor];
@@ -2035,6 +2036,11 @@ static int vkToScintillaKey(int vk) {
 
     BOOL hlLine = [ud boolForKey:kPrefHighlightCurrentLine];
     [sci message:SCI_SETCARETLINEVISIBLE wParam:hlLine ? 1 : 0];
+
+    // Indentation guides — persisted toggle; the NPPPreferencesChanged
+    // path re-runs this method on every editor when the toggle flips.
+    BOOL showGuides = [ud boolForKey:kPrefShowIndentGuides];
+    [sci message:SCI_SETINDENTATIONGUIDES wParam:(showGuides ? SC_IV_LOOKBOTH : SC_IV_NONE)];
 
     // Word wrap — persistent across launches. Read kPrefWordWrap so new
     // tabs inherit the saved state on creation. Toggling via toolbar/menu

@@ -164,6 +164,17 @@ static const NSUInteger kFolderOpenConfirmThreshold = 20;
         #pragma clang diagnostic pop
     }
 
+    // Re-open side panels that were open last quit (issue #132). Primary
+    // window only — secondary windows from Window > New Window must not
+    // inherit the restore. Deferred onto the main queue so it runs AFTER
+    // the side-panel collapse block that buildContentView enqueues during
+    // -init: that block was enqueued first, so FIFO ordering guarantees
+    // the collapse runs before this restore. Calling restore synchronously
+    // here would let the later-running collapse re-hide the panels.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [self.mainWindowController restoreSidePanels];
+    });
+
     // ── Plugins ─────────────────────────────────────────────────────────
 
     if (!cli.noPlugin) {

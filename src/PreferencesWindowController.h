@@ -9,6 +9,7 @@ extern NSString *const kPrefAutoIndent;          // NSInteger 0=None 1=Advanced 
 extern NSString *const kPrefBackspaceUnindent;   // BOOL, default NO
 extern NSString *const kPrefTabOverrides;        // NSDictionary<langName, @{@"tabSize":@N, @"useTabs":@BOOL}>
 extern NSString *const kPrefShowLineNumbers;
+extern NSString *const kPrefShowIndentGuides;    // BOOL, default YES
 /// Word wrap. Persistent across launches (default NO).
 /// Three UI surfaces all read/write this key: the Preferences > Editor
 /// "Word wrap" checkbox, the View > Word Wrap menu item, and the toolbar

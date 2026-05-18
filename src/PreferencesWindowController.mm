@@ -11,6 +11,7 @@ NSString *const kPrefAutoIndent         = @"autoIndent";  // 0=None 1=Advanced 2
 NSString *const kPrefBackspaceUnindent = @"backspaceUnindent";
 NSString *const kPrefTabOverrides      = @"tabOverrides"; // {langName: {tabSize:N, useTabs:BOOL}}
 NSString *const kPrefShowLineNumbers    = @"showLineNumbers";
+NSString *const kPrefShowIndentGuides   = @"showIndentGuides";
 NSString *const kPrefWordWrap           = @"wordWrap";       // persistent across launches; default NO
 NSString *const kPrefHighlightCurrentLine = @"highlightCurrentLine";
 NSString *const kPrefEOLType            = @"eolType";       // 0=CRLF 1=LF 2=CR
@@ -129,6 +130,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         kPrefAutoIndent:         @1,   // 0=None 1=Advanced 2=Basic
         kPrefBackspaceUnindent:  @NO,
         kPrefShowLineNumbers:    @YES,
+        kPrefShowIndentGuides:   @YES,
         kPrefWordWrap:           @NO,   // persistent default (was session-only, now persistent)
         kPrefHighlightCurrentLine: @YES,
         kPrefEOLType:            @1,
@@ -289,6 +291,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         kPrefAutoIndent:         @1,   // 0=None 1=Advanced 2=Basic
         kPrefBackspaceUnindent:  @NO,
         kPrefShowLineNumbers:    @YES,
+        kPrefShowIndentGuides:   @YES,
         kPrefWordWrap:           @NO,   // persistent default (was session-only, now persistent)
         kPrefHighlightCurrentLine: @YES,
         kPrefEOLType:            @1,
