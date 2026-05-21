@@ -966,11 +966,166 @@ static CGFloat nppToolbarCornerR(void) { _ensureToolbarMetrics(); return _scaled
 // Load a toolbar icon using NppThemeManager (auto-switches light/dark).
 // Sets the image's logical size to nppIconSize() so AppKit samples crisply
 // from the 96×96 Fluent source on Retina at the user-selected scale.
+// ── Toolbar icon colorization ────────────────────────────────────────────────
+// Mirrors the Windows "Toolbar" preferences. Our toolbar PNGs are blue line-art
+// (the only saturated content is the ~203° blue accent; everything else is
+// greyscale structure), so:
+//   • Partial  — repaint just the saturated (blue) pixels with the chosen color,
+//     leaving low-saturation greys/blacks untouched. Matches Windows "Partial".
+//   • Complete — fill every opaque pixel with the chosen color (mono silhouette).
+// Off → image returned unchanged.
+
+// Resolves the chosen target color from kPrefToolbarColorChoice (+ accent/custom).
+static NSColor *_nppToolbarTargetColor(void) {
+    NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
+    switch ([ud integerForKey:kPrefToolbarColorChoice]) {
+        case 0: return [NSColor colorWithSRGBRed:0xE8/255.0 green:0x11/255.0 blue:0x23/255.0 alpha:1]; // red
+        case 1: return [NSColor colorWithSRGBRed:0x00/255.0 green:0x8B/255.0 blue:0x00/255.0 alpha:1]; // green
+        case 2: return [NSColor colorWithSRGBRed:0x00/255.0 green:0x78/255.0 blue:0xD4/255.0 alpha:1]; // blue
+        case 3: return [NSColor colorWithSRGBRed:0xB1/255.0 green:0x46/255.0 blue:0xC2/255.0 alpha:1]; // purple
+        case 4: return [NSColor colorWithSRGBRed:0x00/255.0 green:0xB7/255.0 blue:0xC3/255.0 alpha:1]; // cyan
+        case 5: return [NSColor colorWithSRGBRed:0x49/255.0 green:0x82/255.0 blue:0x05/255.0 alpha:1]; // olive
+        case 6: return [NSColor colorWithSRGBRed:0xFF/255.0 green:0xB9/255.0 blue:0x00/255.0 alpha:1]; // yellow
+        case 7:
+            if (@available(macOS 10.14, *)) return [NSColor controlAccentColor];
+            return [NSColor systemBlueColor];
+        case 8: {
+            NSData *d = [ud dataForKey:kPrefToolbarCustomColor];
+            if (d) {
+                NSColor *c = [NSKeyedUnarchiver unarchivedObjectOfClass:[NSColor class] fromData:d error:nil];
+                if (c) return c;
+            }
+            return [NSColor systemBlueColor];
+        }
+    }
+    return [NSColor systemBlueColor];
+}
+
+// Reference hue (degrees) of the icon set's blue accent, measured across all
+// toolbar PNGs (light + dark). Partial colorization rotates every pixel's hue
+// by (targetHue - this), so the blue lands exactly on the chosen color.
+static const double kNppToolbarSourceHueDeg = 203.0;
+
+// RGB<->HSV on 0..1 components. A real-HSV hue rotation (vs CIHueAdjust) keeps
+// each pixel's saturation and value, so greys (S≈0) are untouched, anti-aliased
+// gradients are preserved, and the recolored hue is exact and fully saturated.
+static void _rgb2hsv(double r, double g, double b, double *h, double *s, double *v) {
+    double mx = fmax(r, fmax(g, b)), mn = fmin(r, fmin(g, b)), d = mx - mn;
+    *v = mx;
+    *s = (mx <= 0.0) ? 0.0 : d / mx;
+    if (d <= 0.0) { *h = 0.0; return; }
+    double hh;
+    if      (mx == r) hh = fmod((g - b) / d, 6.0);
+    else if (mx == g) hh = (b - r) / d + 2.0;
+    else              hh = (r - g) / d + 4.0;
+    hh *= 60.0; if (hh < 0.0) hh += 360.0;
+    *h = hh;
+}
+static void _hsv2rgb(double h, double s, double v, double *r, double *g, double *b) {
+    if (s <= 0.0) { *r = *g = *b = v; return; }
+    h = fmod(h, 360.0); if (h < 0.0) h += 360.0;
+    h /= 60.0;
+    int i = (int)h; double f = h - i;
+    double p = v * (1.0 - s), q = v * (1.0 - s * f), t = v * (1.0 - s * (1.0 - f));
+    switch (i) {
+        case 0: *r = v; *g = t; *b = p; break;
+        case 1: *r = q; *g = v; *b = p; break;
+        case 2: *r = p; *g = v; *b = t; break;
+        case 3: *r = p; *g = q; *b = v; break;
+        case 4: *r = t; *g = p; *b = v; break;
+        default:*r = v; *g = p; *b = q; break;
+    }
+}
+
+// Applies the current colorization to a freshly-loaded toolbar icon. Returns the
+// input unchanged when colorization is off or on failure (fail-safe).
+static NSImage *_nppColorizeToolbarImage(NSImage *img) {
+    if (!img) return img;
+    NSInteger mode = [[NSUserDefaults standardUserDefaults] integerForKey:kPrefToolbarColorMode];
+    if (mode == 0) return img;   // Off
+
+    NSSize sz = img.size;
+    if (sz.width < 1 || sz.height < 1) return img;
+    NSColor *target = _nppToolbarTargetColor();
+
+    if (mode == 2) {
+        // Complete: solid mono fill over the icon's alpha mask.
+        NSImage *out = [[NSImage alloc] initWithSize:sz];
+        [out lockFocus];
+        [img drawInRect:NSMakeRect(0, 0, sz.width, sz.height)
+               fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:1.0];
+        [target set];
+        NSRectFillUsingOperation(NSMakeRect(0, 0, sz.width, sz.height), NSCompositingOperationSourceAtop);
+        [out unlockFocus];
+        out.cacheMode = NSImageCacheNever;
+        return out;
+    }
+
+    // Partial: rotate every pixel's hue by (targetHue - sourceBlueHue) in real
+    // HSV space, keeping saturation + value. Greys (S≈0) are unchanged and
+    // anti-aliased edges are preserved (no hard threshold / no flat fill). Works
+    // directly on premultiplied pixels because hsv->rgb is linear in V, so hue
+    // rotation commutes with the alpha scaling.
+    CGImageRef cg = [img CGImageForProposedRect:NULL context:nil hints:nil];
+    if (!cg) return img;
+    size_t w = CGImageGetWidth(cg), h = CGImageGetHeight(cg);
+    if (w == 0 || h == 0) return img;
+
+    CGFloat th = 0, tsat = 0, tbri = 0, ta = 0;
+    [[target colorUsingColorSpace:[NSColorSpace sRGBColorSpace]]
+        getHue:&th saturation:&tsat brightness:&tbri alpha:&ta];
+    double deltaDeg = th * 360.0 - kNppToolbarSourceHueDeg;
+
+    // Dark mode's blue accent is only ~70% saturated (vs ~100% in light); a hue
+    // rotation preserves that, so rotating it to red yields a washed pink. Lift
+    // the saturation for the Red choice in dark mode only — every other color and
+    // light mode already read correctly with the source saturation untouched, and
+    // boosting them would over-saturate and flatten their gradients.
+    double satFloor = ([NppThemeManager shared].isDark &&
+                       [[NSUserDefaults standardUserDefaults] integerForKey:kPrefToolbarColorChoice] == 0)
+                      ? 0.90 : 0.0;
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    size_t bpr = w * 4;
+    uint8_t *buf = (uint8_t *)calloc(h * bpr, 1);
+    if (!buf) { CGColorSpaceRelease(cs); return img; }
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, bpr, cs, kCGImageAlphaPremultipliedLast);
+    if (!ctx) { free(buf); CGColorSpaceRelease(cs); return img; }
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cg);
+
+    for (size_t i = 0; i < h * bpr; i += 4) {
+        if (buf[i + 3] == 0) continue;          // fully transparent
+        double H, S, V;
+        _rgb2hsv(buf[i] / 255.0, buf[i + 1] / 255.0, buf[i + 2] / 255.0, &H, &S, &V);
+        if (S <= 0.0) continue;                 // grey/black/white — no chroma to rotate
+        double ns = (S < satFloor) ? satFloor : S;
+        double R, G, B;
+        _hsv2rgb(H + deltaDeg, ns, V, &R, &G, &B);
+        buf[i]     = (uint8_t)lround(R * 255.0);
+        buf[i + 1] = (uint8_t)lround(G * 255.0);
+        buf[i + 2] = (uint8_t)lround(B * 255.0);
+    }
+
+    CGImageRef outCG = CGBitmapContextCreateImage(ctx);
+    NSImage *out = nil;
+    if (outCG) {
+        out = [[NSImage alloc] initWithCGImage:outCG size:sz];
+        out.cacheMode = NSImageCacheNever;
+        CGImageRelease(outCG);
+    }
+    CGContextRelease(ctx);
+    CGColorSpaceRelease(cs);
+    free(buf);
+    return out ?: img;
+}
+
 static NSImage *nppToolbarIcon(NSString *fileName) {
     NSImage *img = [[NppThemeManager shared] toolbarIconNamed:fileName];
     if (img) {
         img.size = NSMakeSize(nppIconSize(), nppIconSize());
         img.cacheMode = NSImageCacheNever;
+        img = _nppColorizeToolbarImage(img);
+        if (img) img.size = NSMakeSize(nppIconSize(), nppIconSize());
     }
     return img;
 }
@@ -1840,7 +1995,14 @@ static NSImage *_loadPluginIconFromDirs(NSArray<NSString *> *dirs, NSString *fil
         if (!icon)  icon = _loadPluginIconFromDirs(dirs, @"toolbar.png");
     }
 
-    if (icon) icon.size = NSMakeSize(nppIconSize(), nppIconSize());
+    if (icon) {
+        icon.size = NSMakeSize(nppIconSize(), nppIconSize());
+        // Extend toolbar colorization to plugin icons when the user opts in.
+        if ([[NSUserDefaults standardUserDefaults] boolForKey:kPrefToolbarColorPlugins]) {
+            icon = _nppColorizeToolbarImage(icon);
+            if (icon) icon.size = NSMakeSize(nppIconSize(), nppIconSize());
+        }
+    }
     return icon;
 }
 
@@ -2672,6 +2834,9 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     [[NSNotificationCenter defaultCenter]
         addObserver:self selector:@selector(_prefsChanged:)
                name:@"NPPPreferencesChanged" object:nil];
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(_toolbarColorChanged:)
+               name:@"NPPToolbarColorChanged" object:nil];
     // Phase 2: one observer refreshes every open PanelFrame title, so
     // each individual panel no longer needs its own NPPLocalizationChanged
     // subscriber for the title.
@@ -8425,7 +8590,15 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
         }
     }
 
-    // Refresh toolbar icons (switch between light/dark icon sets)
+    // Re-skin the toolbar (light/dark icon set + colorization).
+    [self _reskinToolbarIcons];
+}
+
+// Reloads every toolbar button's image via nppToolbarIcon() (which applies the
+// current light/dark icon set AND the colorization prefs), the three inline
+// view-toggle buttons, and the plugin icons. Shared by the dark-mode switch and
+// the toolbar-colorization preference change so both re-skin identically.
+- (void)_reskinToolbarIcons {
     NSToolbar *toolbar = self.window.toolbar;
     for (NSToolbarItem *item in toolbar.items) {
         NSView *groupView = item.view;
@@ -8445,8 +8618,7 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
     // is built inline without setting NSButton.identifier, and Show All
     // Characters is additionally nested inside _AllCharsHoverGroup — neither
     // condition the identifier-driven loop above can satisfy. Refresh those
-    // three buttons explicitly via the cached ivars so the icon set tracks a
-    // light↔dark switch mid-session.
+    // three buttons explicitly via the cached ivars.
     if (_tbWrap)        _tbWrap.image        = nppToolbarIcon(@"wrap");
     if (_tbAllChars)    _tbAllChars.image    = nppToolbarIcon(@"allChars");
     if (_tbIndentGuide) _tbIndentGuide.image = nppToolbarIcon(@"indentGuide");
@@ -8454,6 +8626,10 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
     // Plugin-supplied toolbar icons (Path A: `toolbar_dark.png` convention
     // alongside `toolbar.png`, or `<hint>_dark.<ext>` next to `<hint>`).
     [self _refreshPluginToolbarIcons];
+}
+
+- (void)_toolbarColorChanged:(NSNotification *)n {
+    [self _reskinToolbarIcons];
 }
 
 // checkForUpdates: moved to AppDelegate

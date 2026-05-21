@@ -33,6 +33,11 @@ extern NSString *const kPrefAutoCompleteEnable;  // BOOL, default YES
 extern NSString *const kPrefAutoCompleteMinChars;// NSInteger 1-9, default 1
 extern NSString *const kPrefAutoCloseBrackets;   // BOOL, default YES
 extern NSString *const kPrefShowFullPathInTitle; // BOOL, default YES
+// Toolbar icon colorization (issue: Windows "Toolbar" prefs parity)
+extern NSString *const kPrefToolbarColorMode;    // 0=Off, 1=Partial(hue rotate), 2=Complete(mono fill). default 0
+extern NSString *const kPrefToolbarColorChoice;  // 0=Red 1=Green 2=Blue 3=Purple 4=Cyan 5=Olive 6=Yellow 7=Accent 8=Custom. default 2
+extern NSString *const kPrefToolbarCustomColor;  // NSData (archived NSColor), used when choice==8
+extern NSString *const kPrefToolbarColorPlugins; // BOOL — also colorize plugin toolbar icons. default NO
 extern NSString *const kPrefCaretWidth;          // NSInteger 1-3, default 1
 extern NSString *const kPrefTabMaxLabelWidth;    // NSInteger pixels, default 190
 extern NSString *const kPrefTabCloseButton;      // BOOL, default YES
