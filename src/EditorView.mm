@@ -1381,8 +1381,44 @@ static NSColor *nppColorFromHex(NSString *hex) {
     NPPStyleEntry *gsWS = [store globalStyleNamed:@"White space symbol"];
     [sci message:SCI_SETWHITESPACEFORE wParam:1 lParam:sciColor(gsWS.fgColor ?: [NSColor orangeColor])];
 
-    // Re-apply language colors with the new theme palette
-    if (_currentLanguage.length) [self applyLexerColors:_currentLanguage];
+    // Re-apply language colors with the new theme palette. For UDL languages
+    // applyLexerColors is a no-op (NPPStyleStore only knows built-in lexers),
+    // so SCI_STYLECLEARALL above would otherwise leave UDL-styled tabs as
+    // plain text after every theme toggle. Re-route UDLs through the UDL
+    // apply path, and re-resolve by file extension so a multi-variant UDL
+    // (the markdown light/dark preinstalled pair) picks the variant matching
+    // the new dark-mode state.
+    if (_currentLanguage.length) {
+        UserDefineLangManager *udlMgr = [UserDefineLangManager shared];
+        UserDefinedLang *udl = [udlMgr languageNamed:_currentLanguage];
+        if (udl) {
+            // Default: re-apply the same UDL. Only re-resolve by extension
+            // (which picks the theme-matching variant for multi-variant UDLs
+            // like the markdown light/dark pair) when the *current* UDL
+            // actually claims this file's extension. Otherwise the user
+            // manually picked a UDL whose ext list doesn't include this
+            // file (an override) — respect that choice.
+            UserDefinedLang *target = udl;
+            NSString *ext = _filePath.pathExtension.lowercaseString;
+            if (ext.length) {
+                BOOL currentClaimsExt = NO;
+                for (NSString *e in [udl.extensions componentsSeparatedByString:@" "]) {
+                    if ([e.lowercaseString isEqualToString:ext]) {
+                        currentClaimsExt = YES;
+                        break;
+                    }
+                }
+                if (currentClaimsExt) {
+                    UserDefinedLang *resolved = [udlMgr languageForExtension:ext];
+                    if (resolved) target = resolved;
+                }
+            }
+            [udlMgr applyLanguage:target toScintillaView:_scintillaView];
+            _currentLanguage = [target.name copy];
+        } else {
+            [self applyLexerColors:_currentLanguage];
+        }
+    }
 
     // Issue #149 — line spacing depends on SCI_TEXTHEIGHT, which depends on
     // the font we just (re-)set. Recompute the extra ascent/descent here so
