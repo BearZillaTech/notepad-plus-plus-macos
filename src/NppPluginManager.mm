@@ -1202,6 +1202,7 @@ static intptr_t _npp_run_on_main(intptr_t (^block)(void)) {
                 case 41002: action = @selector(openDocument:);   break; // IDM_FILE_OPEN
                 case 41006: action = @selector(saveDocument:);   break; // IDM_FILE_SAVE
                 case 41003: action = @selector(closeCurrentTab:); break; // IDM_FILE_CLOSE
+                case 41004: action = @selector(closeAllTabs:);   break; // IDM_FILE_CLOSEALL — used by SessionMgr to swap sessions
                 default:
                     NSLog(@"[Plugins] Unhandled NPPM_MENUCOMMAND IDM=%d", idm);
                     return 0;
