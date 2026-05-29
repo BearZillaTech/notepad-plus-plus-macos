@@ -45,6 +45,7 @@ extern NSString *const kPrefDoubleClickTabClose; // BOOL, default NO
 extern NSString *const kPrefTabBarWrap;          // BOOL, default NO
 extern NSString *const kPrefVirtualSpace;        // BOOL, default NO
 extern NSString *const kPrefScrollBeyondLastLine;// BOOL, default NO
+extern NSString *const kPrefScrollSpeedGain;     // double, default 1.0 (1.0 = no mouse-wheel acceleration)
 extern NSString *const kPrefCaretBlinkRate;      // NSInteger ms, default 500
 extern NSString *const kPrefFontQuality;         // NSInteger 0-3, default 3 (LCD)
 extern NSString *const kPrefLineHeightMultiplier;// double, default 1.0; presets 1.0/1.2/1.3/1.4/1.5 (issue #149)

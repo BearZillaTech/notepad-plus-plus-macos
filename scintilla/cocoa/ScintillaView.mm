@@ -245,6 +245,13 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 
 	// Set when we are in composition mode and partial input is displayed.
 	NSRange mMarkedTextRange;
+
+	// LOCAL CHANGE: non-linear mouse-wheel acceleration for discrete (clicky)
+	// wheels. mWheelAccelFactor is computed once per event in -scrollWheel: and
+	// consumed in -adjustScroll:. 1.0 == no acceleration (default, identical to
+	// prior behavior); >1.0 scales the per-notch line delta.
+	NSTimeInterval mLastWheelTimestamp;
+	double         mWheelAccelFactor;
 }
 
 @synthesize owner = mOwner;
@@ -804,6 +811,33 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 		return;
 	}
 #endif
+	// LOCAL CHANGE: non-linear wheel acceleration for DISCRETE mouse wheels
+	// (clicky wheels with no precise deltas). The user "scroll speed" gain is the
+	// maximum multiplier reached at full spin; the multiplier ramps up with the
+	// inverse of the time between notches, squared (so slow scrolling stays calm
+	// and fast spinning accelerates). gain == 1.0 (default) keeps the multiplier
+	// at 1.0, and -adjustScroll: only scales when it exceeds 1.0 — so the default
+	// leaves scrolling exactly as before. Precise trackpad/Magic-Mouse deltas are
+	// left to the OS, which already accelerates them.
+	mWheelAccelFactor = 1.0;
+	if (theEvent.type == NSEventTypeScrollWheel && !theEvent.hasPreciseScrollingDeltas) {
+		id gainVal = [[NSUserDefaults standardUserDefaults] objectForKey:@"scrollSpeedGain"]; // mirrors kPrefScrollSpeedGain
+		double gain = gainVal ? [gainVal doubleValue] : 1.0;
+		if (gain > 1.0) {
+			const double now = theEvent.timestamp;                       // seconds since boot
+			double dtMs = (mLastWheelTimestamp > 0.0)
+				? (now - mLastWheelTimestamp) * 1000.0 : 1.0e9;          // first notch → treat as slow
+			mLastWheelTimestamp = now;
+			if (dtMs <= 500.0) {                                         // within a continuous gesture
+				double dt = dtMs;                                        // clamp to [DT_MIN, DT_MAX]
+				if (dt < 15.0)  dt = 15.0;
+				if (dt > 250.0) dt = 250.0;
+				const double speedup = (250.0 - dt) / (250.0 - 15.0);    // 0 (slow) .. 1 (fast)
+				mWheelAccelFactor = 1.0 + (gain - 1.0) * speedup * speedup;
+			}
+			// else: long pause → new gesture, start calm (factor stays 1.0)
+		}
+	}
 	[super scrollWheel: theEvent];
 }
 
@@ -850,6 +884,21 @@ static NSCursor *cursorFromEnum(Window::Cursor cursor) {
 				if (diff > 0 && diff < 1.0)        snappedLines = currentLines + 1.0;
 				else if (diff < 0 && diff > -1.0)  snappedLines = currentLines - 1.0;
 				else                               snappedLines = std::round(proposedLines);
+				// LOCAL CHANGE: scale the per-notch line delta by the wheel
+				// acceleration factor computed in -scrollWheel:. Factor 1.0 (the
+				// default, and slow scrolling) skips this entirely → behavior is
+				// identical to before. Capped so a timing glitch can't fling the
+				// document.
+				if (mWheelAccelFactor > 1.0) {
+					const double baseDelta = snappedLines - currentLines; // signed lines this notch
+					if (baseDelta != 0.0) {
+						double mag = std::round(std::fabs(baseDelta) * mWheelAccelFactor);
+						const double maxLines = 500.0; // anti-glitch ceiling only; generous so it never clips real fast scrolling
+						if (mag > maxLines)             mag = maxLines;
+						if (mag < std::fabs(baseDelta)) mag = std::fabs(baseDelta);
+						snappedLines = currentLines + ((baseDelta < 0) ? -mag : mag);
+					}
+				}
 				rc.origin.y = snappedLines * lineHeight;
 			} else {
 				rc.origin.y = std::round(rc.origin.y / lineHeight) * lineHeight;

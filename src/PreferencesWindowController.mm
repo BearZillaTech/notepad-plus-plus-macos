@@ -36,6 +36,7 @@ NSString *const kPrefDoubleClickTabClose = @"doubleClickTabClose";
 NSString *const kPrefTabBarWrap          = @"tabBarWrap";
 NSString *const kPrefVirtualSpace        = @"virtualSpace";
 NSString *const kPrefScrollBeyondLastLine= @"scrollBeyondLastLine";
+NSString *const kPrefScrollSpeedGain     = @"scrollSpeedGain";
 NSString *const kPrefCaretBlinkRate      = @"caretBlinkRate";
 NSString *const kPrefFontQuality         = @"fontQuality";
 NSString *const kPrefLineHeightMultiplier = @"lineHeightMultiplier";
@@ -194,6 +195,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         kPrefTabBarWrap:           @NO,
         kPrefVirtualSpace:         @NO,
         kPrefScrollBeyondLastLine: @NO,
+        kPrefScrollSpeedGain:      @1.0,
         kPrefCaretBlinkRate:       @500,
         kPrefFontQuality:          @3,   // 0=default 1=none 2=antialiased 3=LCD
         kPrefLineHeightMultiplier: @1.0, // 1.0 = no extra spacing (current behavior)
@@ -1938,6 +1940,32 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
     [v addSubview:scalePopup];
     y -= 28;
 
+    // ── Mouse wheel scroll speed ───────────────────────────────────────────────
+    // Non-linear acceleration for discrete (clicky) mouse wheels: spinning faster
+    // scrolls proportionally more, up to this multiplier at full speed. 1× (off)
+    // is the default and leaves scrolling exactly as it was. Read live by
+    // ScintillaView on each wheel event — no restart needed.
+    y -= 8;
+    NSTextField *wheelLabel = [NSTextField labelWithString:[loc translate:@"Mouse wheel scroll speed"]];
+    wheelLabel.frame = NSMakeRect(20, y, 200, 20);
+    [v addSubview:wheelLabel];
+
+    NSPopUpButton *wheelPopup = [[NSPopUpButton alloc]
+        initWithFrame:NSMakeRect(220, y - 3, 130, 26) pullsDown:NO];
+    [wheelPopup addItemsWithTitles:@[[loc translate:@"1× (off)"], @"2×", @"3×", @"5×", @"8×", @"10×"]];
+    wheelPopup.target = self;
+    wheelPopup.action = @selector(prefChanged:);
+    wheelPopup.tag    = 1210;
+    static const double wheelGains[] = {1.0, 2.0, 3.0, 5.0, 8.0, 10.0};
+    double curGain = [ud doubleForKey:kPrefScrollSpeedGain];
+    NSInteger gainIdx = 0;
+    for (NSInteger i = 0; i < 6; i++) {
+        if (fabs(curGain - wheelGains[i]) < 1e-6) { gainIdx = i; break; }
+    }
+    [wheelPopup selectItemAtIndex:gainIdx];
+    [v addSubview:wheelPopup];
+    y -= 28;
+
     return v;
 }
 
@@ -2066,6 +2094,15 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
             break;
         }
         case 1209: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefFileStatusUpdateSilently]; break;
+        case 1210: {
+            // Mouse wheel scroll speed (gain). Read live by ScintillaView on each
+            // wheel event, so no notification or restart is needed.
+            static const double gains[6] = {1.0, 2.0, 3.0, 5.0, 8.0, 10.0};
+            NSInteger idx = [(NSPopUpButton *)sender indexOfSelectedItem];
+            if (idx < 0 || idx >= 6) break;
+            [ud setDouble:gains[idx] forKey:kPrefScrollSpeedGain];
+            break;
+        }
         // Performance / Large File Restriction (1400-1407 — 1300s collide with Indentation)
         case 1400: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefLargeFileEnabled]; break;
         case 1401: {
