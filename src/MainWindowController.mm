@@ -1510,14 +1510,15 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 // clicking it pops a menu of those items. Custom-drawn (Tahoe profile only) — this
 // is what NSToolbarItemGroup can't do (it renders a separate ellipsis button and
 // can't make the label a dropdown). Used via -makeTahoeGroupToolbarItem:.
-static const CGFloat kTGOuterX   = 9.0;   // outer margin each side → gap BETWEEN capsules
-static const CGFloat kTGPadX     = 7.0;   // capsule inset L/R
-static const CGFloat kTGPadTop   = 5.0;   // capsule inset top
-static const CGFloat kTGPadBot   = 4.0;   // capsule inset bottom
-static const CGFloat kTGBtn      = 24.0;  // icon-button box (condensed)
-static const CGFloat kTGBtnGap   = 2.0;   // gap between icon buttons
-static const CGFloat kTGLabelGap = 1.0;   // gap between icon row and label
-static const CGFloat kTGLabelH   = 13.0;  // label row height
+static const CGFloat kTGOuterX   = 10.0;  // outer margin each side → gap BETWEEN pills
+static const CGFloat kTGPadX     = 11.0;  // pill inset L/R (generous, mockup-like)
+static const CGFloat kTGPadTop   = 8.0;   // pill inset top
+static const CGFloat kTGPadBot   = 6.0;   // pill inset bottom
+static const CGFloat kTGBtn      = 24.0;  // icon-button box
+static const CGFloat kTGBtnGap   = 4.0;   // gap between icon buttons
+static const CGFloat kTGLabelGap = 3.0;   // gap between icon row and label
+static const CGFloat kTGLabelH   = 14.0;  // label row height
+static const CGFloat kTGRadius   = 12.0;  // pill corner radius (rounded, mockup-like)
 
 @interface NppTahoeGroupView : NSView
 - (instancetype)initWithButtons:(NSArray<NSButton *> *)buttons
@@ -1558,8 +1559,8 @@ static const CGFloat kTGLabelH   = 13.0;  // label row height
     NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
     ps.alignment = NSTextAlignmentCenter;
     NSMutableAttributedString *att = [[NSMutableAttributedString alloc] initWithString:label attributes:@{
-        NSFontAttributeName:            [NSFont systemFontOfSize:10],
-        NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+        NSFontAttributeName:            [NSFont systemFontOfSize:11 weight:NSFontWeightMedium],
+        NSForegroundColorAttributeName: [NSColor labelColor],   // near-black like the mockup
         NSParagraphStyleAttributeName:  ps,
     }];
     if (menu) {
@@ -1585,11 +1586,15 @@ static const CGFloat kTGLabelH   = 13.0;  // label row height
 
 - (void)drawRect:(NSRect)dirtyRect {
     BOOL dark = [NppThemeManager shared].isDark;
-    NSColor *fill = dark ? [NSColor colorWithWhite:1.0 alpha:0.07]
-                         : [NSColor colorWithWhite:1.0 alpha:0.70];  // whitish capsule (mockup)
-    // Inset by the outer margin so each capsule is separated from its neighbours.
-    NSRect cap = NSInsetRect(self.bounds, kTGOuterX, 0.5);
-    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:cap xRadius:6 yRadius:6];
+    // Light cool-gray pill (the mockup's translucent glass over a blue desktop reads
+    // as a light blue-white; we approximate with a clearly-visible light surface).
+    NSColor *fill = dark
+        ? [NSColor colorWithRed:1.00 green:1.00 blue:1.00 alpha:0.10]
+        : [NSColor colorWithRed:0.965 green:0.975 blue:0.99 alpha:0.92];
+    // Inset by the outer margin so each pill is separated from its neighbours.
+    NSRect cap = NSInsetRect(self.bounds, kTGOuterX, 1.0);
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:cap
+                                                      xRadius:kTGRadius yRadius:kTGRadius];
     [fill setFill];
     [p fill];
 }
