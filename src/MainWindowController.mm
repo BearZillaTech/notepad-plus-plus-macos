@@ -1500,6 +1500,83 @@ static NSImage *_customToolbarIcon(NSString *buttonId, NSDictionary *toolbarConf
 }
 @end
 
+// ── Tahoe toolbar group (Option A) ───────────────────────────────────────────
+// A condensed, slightly-rounded "capsule" holding a row of icon buttons with the
+// group label beneath. When the group has hidden items, the label shows a ▾ and
+// clicking it pops a menu of those items. Custom-drawn (Tahoe profile only) — this
+// is what NSToolbarItemGroup can't do (it renders a separate ellipsis button and
+// can't make the label a dropdown). Used via -makeTahoeGroupToolbarItem:.
+static const CGFloat kTGPadX     = 7.0;   // capsule inset L/R
+static const CGFloat kTGPadTop   = 5.0;   // capsule inset top
+static const CGFloat kTGPadBot   = 4.0;   // capsule inset bottom
+static const CGFloat kTGBtn      = 24.0;  // icon-button box (condensed)
+static const CGFloat kTGBtnGap   = 2.0;   // gap between icon buttons
+static const CGFloat kTGLabelGap = 1.0;   // gap between icon row and label
+static const CGFloat kTGLabelH   = 13.0;  // label row height
+
+@interface NppTahoeGroupView : NSView
+- (instancetype)initWithButtons:(NSArray<NSButton *> *)buttons
+                          label:(NSString *)label
+                   overflowMenu:(nullable NSMenu *)menu;
+@end
+@implementation NppTahoeGroupView {
+    NSMenu   *_overflowMenu;   // nil when the group has no hidden items
+    NSButton *_labelButton;
+}
+
+- (instancetype)initWithButtons:(NSArray<NSButton *> *)buttons
+                          label:(NSString *)label
+                   overflowMenu:(nullable NSMenu *)menu {
+    NSUInteger n = buttons.count;
+    CGFloat rowW = n * kTGBtn + (n > 0 ? (n - 1) * kTGBtnGap : 0);
+    CGFloat w = kTGPadX * 2 + rowW;
+    CGFloat h = kTGPadTop + kTGBtn + kTGLabelGap + kTGLabelH + kTGPadBot;
+    self = [super initWithFrame:NSMakeRect(0, 0, w, h)];
+    if (!self) return nil;
+    self.wantsLayer = YES;
+    _overflowMenu = menu;
+
+    CGFloat x = kTGPadX;
+    CGFloat btnY = h - kTGPadTop - kTGBtn;
+    for (NSButton *b in buttons) {
+        b.frame = NSMakeRect(x, btnY, kTGBtn, kTGBtn);
+        [self addSubview:b];
+        x += kTGBtn + kTGBtnGap;
+    }
+
+    _labelButton = [[NSButton alloc] initWithFrame:NSMakeRect(0, kTGPadBot, w, kTGLabelH)];
+    _labelButton.bordered = NO;
+    [_labelButton setButtonType:NSButtonTypeMomentaryChange];
+    NSString *title = menu ? [label stringByAppendingString:@"  ⌄"] : label;
+    NSMutableParagraphStyle *ps = [NSMutableParagraphStyle new];
+    ps.alignment = NSTextAlignmentCenter;
+    _labelButton.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:@{
+        NSFontAttributeName:            [NSFont systemFontOfSize:10],
+        NSForegroundColorAttributeName: [NSColor secondaryLabelColor],
+        NSParagraphStyleAttributeName:  ps,
+    }];
+    if (menu) { _labelButton.target = self; _labelButton.action = @selector(_popOverflow:); }
+    // No overflow → leave target nil; clicks are a harmless no-op, label stays full-opacity.
+    [self addSubview:_labelButton];
+    return self;
+}
+
+- (void)_popOverflow:(id)sender {
+    if (_overflowMenu)
+        [_overflowMenu popUpMenuPositioningItem:nil atLocation:NSMakePoint(0, 0) inView:_labelButton];
+}
+
+- (void)drawRect:(NSRect)dirtyRect {
+    BOOL dark = [NppThemeManager shared].isDark;
+    NSColor *fill = dark ? [NSColor colorWithWhite:1.0 alpha:0.07]
+                         : [NSColor colorWithWhite:1.0 alpha:0.70];  // whitish capsule (mockup)
+    NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5)
+                                                      xRadius:6 yRadius:6];
+    [fill setFill];
+    [p fill];
+}
+@end
+
 // ── Toolbar configuration from XML ──────────────────────────────────────────
 
 /// Parse toolbarButtonsConf.xml and return the ordered list of visible buttons.
@@ -1945,12 +2022,10 @@ static NSArray<NSArray *> *tahoeToolbarGroups(void) {
     NSToolbar *tb = [[NSToolbar alloc] initWithIdentifier:@"NppToolbar"];
     tb.delegate = self;
     tb.allowsUserCustomization = NO;
-    // Classic packs several buttons into one custom-view NSToolbarItem (no per-item
-    // label → Icon-only). The Tahoe profile uses real per-button items inside
-    // NSToolbarItemGroups, so it renders labels (Icon and Label).
-    tb.displayMode = [NppThemeManager shared].usesGlassMaterials
-        ? NSToolbarDisplayModeIconAndLabel
-        : NSToolbarDisplayModeIconOnly;
+    // Icon-only for both profiles: Classic packs buttons into one custom-view item
+    // per group; the Tahoe profile uses custom NppTahoeGroupView capsules that draw
+    // their OWN labels (and label-dropdowns). Either way there are no system labels.
+    tb.displayMode = NSToolbarDisplayModeIconOnly;
     // Issue #26: each NSToolbarItem in our setup wraps a multi-button custom
     // view, not a single labelled button — so there's no per-item label to
     // render in "Icon and Text" mode. Hide the display-mode picker from the
@@ -2450,26 +2525,11 @@ static NSToolbarItemIdentifier const kTBUserConfig = @"TB_UserConfig";
 }
 
 // Build one Tahoe NSToolbarItem subitem (current PNG icon + label) for a button id.
-- (nullable NSToolbarItem *)_tahoeSubitemForButton:(NSString *)btnId
-                                              desc:(NSArray *)desc
-                                            iconSz:(CGFloat)iconSz {
-    NSToolbarItem *sub = [[NSToolbarItem alloc]
-        initWithItemIdentifier:[@"TBT_" stringByAppendingString:btnId]];
-    NSImage *img = nppToolbarIcon(desc[3]);
-    if (img) { img.size = NSMakeSize(iconSz, iconSz); sub.image = img; }
-    sub.label        = desc[1];
-    sub.paletteLabel = desc[1];
-    sub.toolTip      = desc[2];
-    sub.target       = self;
-    sub.action       = NSSelectorFromString(desc[4]);
-    return sub;
-}
-
-// Build one Tahoe group: PRIMARY buttons as per-button NSToolbarItem subitems
-// (current PNG icons + labels), plus — when overflow is non-empty — a trailing ▾
-// NSMenuToolbarItem whose menu exposes the remaining buttons. Wrapped in an
-// NSToolbarItemGroup (→ Liquid Glass capsule on macOS 26, plain labeled group
-// otherwise). Respects the toolbar-config hidden-button set. No vertical dividers.
+// Build one Tahoe group as an NppTahoeGroupView (Option A): a rounded-rect capsule
+// with the PRIMARY icon buttons and the group label beneath; when overflow exists,
+// the label carries a ▾ that pops a menu of the hidden items. Custom-drawn so the
+// dropdown lives on the label (no separate ellipsis button). Respects the
+// toolbar-config hidden-button set.
 - (NSToolbarItem *)makeTahoeGroupToolbarItem:(NSString *)groupIdent
                                        label:(NSString *)groupLabel
                                      primary:(NSArray *)primaryIds
@@ -2479,52 +2539,52 @@ static NSToolbarItemIdentifier const kTBUserConfig = @"TB_UserConfig";
     NSSet *hiddenIDs = _toolbarConfig[@"hiddenIDs"];
     const CGFloat iconSz = [NppThemeManager shared].toolbarMetrics.iconSize;
 
-    NSMutableArray<NSToolbarItem *> *subs = [NSMutableArray array];
+    // Primary icon buttons (reuse NppToolbarButton for hover feedback).
+    NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
     for (NSString *btnId in primaryIds) {
         if ([hiddenIDs containsObject:btnId]) continue;
         NSArray *desc = descMap[btnId];
         if (!desc) continue;
-        NSToolbarItem *sub = [self _tahoeSubitemForButton:btnId desc:desc iconSz:iconSz];
-        if (sub) [subs addObject:sub];
+        NppToolbarButton *b = [[NppToolbarButton alloc]
+            initWithFrame:NSMakeRect(0, 0, kTGBtn, kTGBtn)];
+        NSImage *img = nppToolbarIcon(desc[3]);
+        if (img) { img.size = NSMakeSize(iconSz, iconSz); b.image = img; }
+        b.toolTip = desc[2];
+        b.target  = self;
+        b.action  = NSSelectorFromString(desc[4]);
+        [buttons addObject:b];
     }
 
-    // Trailing ▾ overflow menu (only if there are non-hidden overflow buttons).
+    // Overflow menu (the hidden items behind the label's ▾).
+    NSMenu *menu = nil;
     if (overflowIds.count > 0) {
-        if (@available(macOS 10.15, *)) {
-            NSMenu *menu = [[NSMenu alloc] initWithTitle:groupLabel];
-            for (NSString *btnId in overflowIds) {
-                if ([hiddenIDs containsObject:btnId]) continue;
-                NSArray *desc = descMap[btnId];
-                if (!desc) continue;
-                NSMenuItem *mi = [[NSMenuItem alloc]
-                    initWithTitle:desc[1] action:NSSelectorFromString(desc[4]) keyEquivalent:@""];
-                mi.target = self;
-                NSImage *mIcon = nppToolbarIcon(desc[3]);
-                if (mIcon) { mIcon.size = NSMakeSize(16, 16); mi.image = mIcon; }
-                [menu addItem:mi];
-            }
-            if (menu.numberOfItems > 0) {
-                NSMenuToolbarItem *more = [[NSMenuToolbarItem alloc]
-                    initWithItemIdentifier:[@"TBT_more:" stringByAppendingString:groupLabel]];
-                more.menu  = menu;
-                more.image = [NSImage imageWithSystemSymbolName:@"ellipsis"
-                                         accessibilityDescription:@"More"];
-                more.label        = @"More";
-                more.paletteLabel = @"More";
-                more.toolTip      = [NSString stringWithFormat:@"More %@ commands", groupLabel];
-                [subs addObject:more];
-            }
+        menu = [[NSMenu alloc] initWithTitle:groupLabel];
+        for (NSString *btnId in overflowIds) {
+            if ([hiddenIDs containsObject:btnId]) continue;
+            NSArray *desc = descMap[btnId];
+            if (!desc) continue;
+            NSMenuItem *mi = [[NSMenuItem alloc]
+                initWithTitle:desc[1] action:NSSelectorFromString(desc[4]) keyEquivalent:@""];
+            mi.target = self;
+            NSImage *mIcon = nppToolbarIcon(desc[3]);
+            if (mIcon) { mIcon.size = NSMakeSize(16, 16); mi.image = mIcon; }
+            [menu addItem:mi];
         }
+        if (menu.numberOfItems == 0) menu = nil;
     }
-    if (subs.count == 0) return nil;
 
-    NSToolbarItemGroup *group = [[NSToolbarItemGroup alloc] initWithItemIdentifier:groupIdent];
-    group.subitems     = subs;
-    group.label        = groupLabel;
-    group.paletteLabel = groupLabel;
-    if (@available(macOS 10.13, *))
-        group.selectionMode = NSToolbarItemGroupSelectionModeMomentary;
-    return group;
+    if (buttons.count == 0 && !menu) return nil;
+
+    NppTahoeGroupView *gv = [[NppTahoeGroupView alloc] initWithButtons:buttons
+                                                                label:groupLabel
+                                                         overflowMenu:menu];
+    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:groupIdent];
+    item.view         = gv;
+    item.label        = @"";          // the view draws its own label
+    item.paletteLabel = groupLabel;
+    item.minSize      = gv.frame.size;
+    item.maxSize      = gv.frame.size;
+    return item;
 }
 
 // Classic profile (current default): today's group / plugin item builders.
