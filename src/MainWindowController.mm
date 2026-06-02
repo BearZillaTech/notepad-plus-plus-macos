@@ -924,6 +924,9 @@ static NSToolbarItemIdentifier const kTBDocMap      = @"TB_DocMap";
 static NSToolbarItemIdentifier const kTBDocList     = @"TB_DocList";
 static NSToolbarItemIdentifier const kTBFuncList    = @"TB_FuncList";
 static NSToolbarItemIdentifier const kTBFileBrowser = @"TB_FileBrowser";
+static NSToolbarItemIdentifier const kTBCharPanel   = @"TB_CharPanel";   // Tahoe-only (SF Symbol)
+static NSToolbarItemIdentifier const kTBClipboard   = @"TB_Clipboard";   // Tahoe-only (SF Symbol)
+static NSToolbarItemIdentifier const kTBProject     = @"TB_Project";     // Tahoe-only (SF Symbol)
 static NSToolbarItemIdentifier const kTBMonitor     = @"TB_Monitor";
 static NSToolbarItemIdentifier const kTBStartRecord = @"TB_StartRecord";
 static NSToolbarItemIdentifier const kTBStopRecord  = @"TB_StopRecord";
@@ -1198,6 +1201,18 @@ static NSImage *_nppColorizeToolbarImage(NSImage *img) {
 }
 
 static NSImage *nppToolbarIcon(NSString *fileName) {
+    // "sf:<symbol>" → a system SF Symbol (template-rendered). Used by Tahoe-only
+    // toolbar items that have no bundled PNG (e.g. the Character/Clipboard/Project
+    // panels). Returned as a template so menu items / buttons tint it correctly.
+    if ([fileName hasPrefix:@"sf:"]) {
+        NSImage *s = [NSImage imageWithSystemSymbolName:[fileName substringFromIndex:3]
+                                accessibilityDescription:nil];
+        if (s) {
+            [s setTemplate:YES];
+            s.size = NSMakeSize(nppIconSize(), nppIconSize());
+        }
+        return s;
+    }
     NSImage *img = [[NppThemeManager shared] toolbarIconNamed:fileName];
     if (img) {
         img.size = NSMakeSize(nppIconSize(), nppIconSize());
@@ -1756,6 +1771,9 @@ static NSArray<NSArray *> *toolbarDescriptors() {
         @[kTBDocList,     @"Doc List",   @"Document List",            @"docList",          @"showDocumentList:"],
         @[kTBFuncList,    @"Func List",  @"Function List",            @"funcList",         @"showFunctionList:"],
         @[kTBFileBrowser, @"Workspace",  @"Folder as Workspace",      @"fileBrowser",      @"showFolderAsWorkspace:"],
+        @[kTBCharPanel,   @"Characters", @"Character Panel",          @"sf:character",             @"characterPanel:"],
+        @[kTBClipboard,   @"Clipboard",  @"Clipboard History",        @"sf:doc.on.clipboard",      @"showClipboardHistory:"],
+        @[kTBProject,     @"Project",    @"Project Panel",            @"sf:list.bullet.rectangle", @"showProjectPanel1:"],
         @[kTBMonitor,     @"Monitor",    @"Monitoring (tail -f)",     @"monitoring",       @"toggleMonitoring:"],
         @[kTBStartRecord, @"Record",     @"Start Recording",          @"startRecord",      @"startMacroRecording:"],
         @[kTBStopRecord,  @"Stop",       @"Stop Recording",           @"stopRecord",       @"stopMacroRecording:"],
@@ -1798,13 +1816,13 @@ static NSDictionary<NSString *, NSArray *> *toolbarGroupMap(void) {
 // handles those specially). No vertical dividers between Tahoe groups (by design).
 static NSArray<NSArray *> *tahoeToolbarGroups(void) {
     return @[
-        @[@"File",    @[kTBNew, kTBOpen, kTBSave],            @[kTBSaveAll, kTBClose, kTBCloseAll, kTBPrint]],
+        @[@"File",    @[kTBNew, kTBOpen, kTBSave, kTBPrint],  @[kTBSaveAll, kTBClose, kTBCloseAll]],
         @[@"Edit",    @[kTBCopy, kTBPaste, kTBUndo, kTBRedo], @[kTBCut]],
         @[@"Find",    @[kTBFind],                             @[kTBFindRep]],
         @[@"Zoom",    @[kTBZoomIn, kTBZoomOut],               @[]],
         @[@"View",    @[kTBWrap, kTBIndentGuide],             @[kTBAllChars]],
         @[@"Sync",    @[kTBSyncV],                            @[kTBSyncH]],
-        @[@"Panels",  @[kTBDocList, kTBFileBrowser],          @[kTBUDL, kTBDocMap, kTBFuncList]],
+        @[@"Panels",  @[kTBDocList, kTBFileBrowser, kTBFuncList], @[kTBUDL, kTBDocMap, kTBCharPanel, kTBClipboard, kTBProject]],
         @[@"Monitor", @[kTBMonitor],                          @[]],
         @[@"Macro",   @[kTBStartRecord, kTBStopRecord],       @[kTBPlayRecord, kTBPlayRecordM, kTBSaveRecord]],
     ];
@@ -2652,37 +2670,62 @@ static NSToolbarItemIdentifier const kTBUserConfig = @"TB_UserConfig";
 - (NSToolbarItem *)makeTahoePluginGroupToolbarItem:(NSString *)groupIdent {
     if (_pluginToolbarItems.count == 0) return nil;
     const CGFloat iconSz   = [NppThemeManager shared].toolbarMetrics.iconSize;
-    const NSUInteger kPrim = 3;   // primary plugin icons shown in the capsule
+
+    // Curated DEFAULT: these plugin commands — matched by their registered tooltip
+    // (the plugin's menu-command name) — show as primary buttons in the capsule;
+    // every other plugin icon goes behind the label's ▾. Hardcoded for now; Step
+    // 3e will make per-group visibility user-editable. Case-insensitive match.
+    static NSArray<NSString *> *kPrimaryPluginTips = nil;
+    static dispatch_once_t tipsOnce;
+    dispatch_once(&tipsOnce, ^{
+        kPrimaryPluginTips = @[ @"Compare", @"Clear Active Compare",
+                                @"Spell Check Document Automatically",
+                                @"Show Beads panel", @"Toggle Markdown Panel" ];
+    });
+
+    NSMutableArray<NSDictionary *> *primary  = [NSMutableArray array];
+    NSMutableArray<NSDictionary *> *overflow = [NSMutableArray array];
+    for (NSDictionary *pti in _pluginToolbarItems) {
+        NSString *tip = pti[@"tooltip"] ?: @"";
+        BOOL isPrimary = NO;
+        for (NSString *p in kPrimaryPluginTips)
+            if ([tip caseInsensitiveCompare:p] == NSOrderedSame) { isPrimary = YES; break; }
+        [(isPrimary ? primary : overflow) addObject:pti];
+    }
+    // Fallback: if none of the curated commands are installed, show the first 3
+    // registered icons as primary so the capsule isn't all-overflow.
+    if (primary.count == 0 && _pluginToolbarItems.count > 0) {
+        NSUInteger n = MIN((NSUInteger)3, _pluginToolbarItems.count);
+        [primary addObjectsFromArray:[_pluginToolbarItems subarrayWithRange:NSMakeRange(0, n)]];
+        overflow = [[_pluginToolbarItems subarrayWithRange:
+                        NSMakeRange(n, _pluginToolbarItems.count - n)] mutableCopy];
+    }
 
     NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
+    for (NSDictionary *pti in primary) {
+        NppToolbarButton *b = [[NppToolbarButton alloc]
+            initWithFrame:NSMakeRect(0, 0, kTGBtn, kTGBtn)];
+        NSImage *img = pti[@"icon"];
+        if (img) { img.size = NSMakeSize(iconSz, iconSz); b.image = img; }
+        b.toolTip = pti[@"tooltip"] ?: (pti[@"id"] ?: @"");
+        b.tag     = [pti[@"cmdID"] intValue];
+        b.target  = self;
+        b.action  = @selector(pluginToolbarAction:);
+        [buttons addObject:b];
+    }
     NSMenu *menu = nil;
-    NSUInteger i = 0;
-    for (NSDictionary *pti in _pluginToolbarItems) {
-        int cmdID = [pti[@"cmdID"] intValue];
-        NSString *title = pti[@"tooltip"] ?: (pti[@"id"] ?: @"");
-        if (i < kPrim) {
-            NppToolbarButton *b = [[NppToolbarButton alloc]
-                initWithFrame:NSMakeRect(0, 0, kTGBtn, kTGBtn)];
-            NSImage *img = pti[@"icon"];
-            if (img) { img.size = NSMakeSize(iconSz, iconSz); b.image = img; }
-            b.toolTip = title;
-            b.tag     = cmdID;
-            b.target  = self;
-            b.action  = @selector(pluginToolbarAction:);
-            [buttons addObject:b];
-        } else {
-            if (!menu) menu = [[NSMenu alloc] initWithTitle:@"Plugins"];
+    if (overflow.count > 0) {
+        menu = [[NSMenu alloc] initWithTitle:@"Plugins"];
+        for (NSDictionary *pti in overflow) {
             NSMenuItem *mi = [[NSMenuItem alloc]
-                initWithTitle:title action:@selector(pluginToolbarAction:) keyEquivalent:@""];
+                initWithTitle:(pti[@"tooltip"] ?: (pti[@"id"] ?: @""))
+                       action:@selector(pluginToolbarAction:) keyEquivalent:@""];
             mi.target = self;
-            mi.tag    = cmdID;
+            mi.tag    = [pti[@"cmdID"] intValue];
             NSImage *mIcon = pti[@"icon"];
-            if (mIcon) {
-                NSImage *copy = [mIcon copy]; copy.size = NSMakeSize(16, 16); mi.image = copy;
-            }
+            if (mIcon) { NSImage *copy = [mIcon copy]; copy.size = NSMakeSize(16, 16); mi.image = copy; }
             [menu addItem:mi];
         }
-        i++;
     }
     if (buttons.count == 0 && !menu) return nil;
 
