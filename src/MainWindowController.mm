@@ -3257,6 +3257,10 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     item.view    = groupView;
     item.minSize = NSMakeSize(totalW, kH);
     item.maxSize = NSMakeSize(totalW, kH);
+    // Tahoe: drop macOS-26's per-item glass tray (the "white pill") so the +/▾/×
+    // buttons read plain, like on Sequoia. Gated; no effect under Classic.
+    if ([NppThemeManager shared].usesGlassMaterials)
+        item.bordered = NO;
     return item;
 }
 
