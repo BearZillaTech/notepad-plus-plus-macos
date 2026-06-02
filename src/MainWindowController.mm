@@ -1602,17 +1602,21 @@ static const CGFloat kTGRadius   = 12.0;  // pill corner radius (rounded, mockup
 
 - (void)drawRect:(NSRect)dirtyRect {
     BOOL dark = [NppThemeManager shared].isDark;
-    // Fill (almost) the whole item so we cover the per-item system glass; the 1px
-    // inset is just so the border stroke isn't clipped at the edges.
-    NSRect cap = NSInsetRect(self.bounds, 1.0, 1.0);
+    // Fill the FULL item bounds so we fully cover macOS-26's per-item system glass
+    // tray (which fills the whole item). Any inset would leave a 1pt ring of that
+    // tray showing — invisible on a neutral background but a glaring white "halo"
+    // against the gradient window. The opaque fill below also stops the tray from
+    // bleeding through. (Border drawn on the bounds edge is fine — half-clipped.)
+    NSRect cap = self.bounds;
     NSBezierPath *p = [NSBezierPath bezierPathWithRoundedRect:cap
                                                       xRadius:kTGRadius yRadius:kTGRadius];
 
     // Subtle top-light → bottom-darker gradient = a gentle "raised" volume.
-    NSColor *top = dark ? [NSColor colorWithWhite:1.0 alpha:0.14]
-                        : [NSColor colorWithRed:0.995 green:1.0  blue:1.0   alpha:0.95];
-    NSColor *bot = dark ? [NSColor colorWithWhite:1.0 alpha:0.06]
-                        : [NSColor colorWithRed:0.925 green:0.94 blue:0.965 alpha:0.95];
+    // Opaque (alpha 1.0) so no system tray shows through the pill.
+    NSColor *top = dark ? [NSColor colorWithWhite:0.27 alpha:1.0]
+                        : [NSColor colorWithRed:0.995 green:1.0  blue:1.0   alpha:1.0];
+    NSColor *bot = dark ? [NSColor colorWithWhite:0.21 alpha:1.0]
+                        : [NSColor colorWithRed:0.925 green:0.94 blue:0.965 alpha:1.0];
     NSGradient *g = [[NSGradient alloc] initWithStartingColor:top endingColor:bot];
     [g drawInBezierPath:p angle:-90];   // -90° → start (light) at top, end (darker) at bottom
 
