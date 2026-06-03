@@ -3926,8 +3926,27 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     // Clean up stale backups after saving.
     NSMutableSet *activeBackups = [NSMutableSet set];
 
+    // Issue #162: enumerate editors across ALL views (primary + both split
+    // views), not just the primary. A tab moved via "Move to Other …View" lives
+    // in a different TabManager; iterating only _tabManager omitted it from the
+    // session AND (because its backup wasn't added to activeBackups) deleted its
+    // backup in the prune below — silent loss of unsaved content. Restored tabs
+    // all reopen in the primary view (split layout is intentionally not kept).
+    NSArray<TabManager *> *sessionManagers = @[_tabManager, _subTabManagerH, _subTabManagerV];
+    NSMutableArray<EditorView *> *sessionEditors = [NSMutableArray array];
+    NSMapTable<EditorView *, TabManager *> *ownerManager =
+        [NSMapTable strongToStrongObjectsMapTable];
+    for (TabManager *mgr in sessionManagers) {
+        if (!mgr) continue;
+        for (EditorView *ed in mgr.allEditors) {
+            if ([sessionEditors containsObject:ed]) continue;  // defensive: never dup
+            [sessionEditors addObject:ed];
+            [ownerManager setObject:mgr forKey:ed];
+        }
+    }
+
     NSMutableArray *tabs = [NSMutableArray array];
-    for (EditorView *ed in _tabManager.allEditors) {
+    for (EditorView *ed in sessionEditors) {
         NSMutableDictionary *info = [NSMutableDictionary dictionary];
 
         if (ed.filePath) info[@"filePath"] = ed.filePath;
@@ -3966,12 +3985,13 @@ static BOOL groupHasTrailingSep(NSString *ident) {
         if (bidi == 2) // R2L
             info[@"RTL"] = @YES;
 
-        // ── Per-tab color and pin state ──
-        NSInteger edIdx = [_tabManager.allEditors indexOfObject:ed];
+        // ── Per-tab color and pin state (looked up within the OWNING view) ──
+        TabManager *ownerMgr = [ownerManager objectForKey:ed] ?: _tabManager;
+        NSInteger edIdx = [ownerMgr.allEditors indexOfObject:ed];
         if (edIdx != NSNotFound) {
-            NSInteger cid = [_tabManager.tabBar tabColorAtIndex:edIdx];
+            NSInteger cid = [ownerMgr.tabBar tabColorAtIndex:edIdx];
             if (cid >= 0) info[@"tabColorId"] = @(cid);
-            if ([_tabManager.tabBar isTabPinnedAtIndex:edIdx])
+            if ([ownerMgr.tabBar isTabPinnedAtIndex:edIdx])
                 info[@"pinned"] = @YES;
         }
 
