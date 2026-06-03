@@ -1,5 +1,6 @@
 #import "MainWindowController.h"
 #import <QuartzCore/QuartzCore.h>   // CAGradientLayer (Tahoe window backdrop)
+#import "TahoeToolbarConfig.h"      // Tahoe toolbar group layout (Liquid Glass)
 #import "AppDelegate.h"
 #import "NppBuiltinLanguages.h"
 #import "NppCommandLineParams.h"
@@ -1988,6 +1989,11 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
     // Toolbar configuration parsed from toolbarButtonsConf.xml
     NSDictionary *_toolbarConfig; // @{@"hiddenIDs": NSSet, @"extraButtons": NSArray, @"appearance": NSDictionary}
 
+    // Tahoe profile: effective toolbar group layout (built-in + plugins groups),
+    // loaded from toolbarButtonsTahoeConf.xml (or materialized from defaults).
+    // See TahoeToolbarConfig. Array of @{label,kind,primary,overflow,hidden}.
+    NSArray<NSDictionary *> *_tahoeModel;
+
     // View display modes
     BOOL              _postItMode;
     BOOL              _postItSavedToolbarVisible;
@@ -2147,6 +2153,9 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
 - (void)buildToolbar {
     // Parse toolbar configuration (hidden buttons, extra buttons, appearance)
     _toolbarConfig = _parseToolbarConfig();
+    // Tahoe profile: load (or materialize) the group layout from
+    // toolbarButtonsTahoeConf.xml before the toolbar delegate is queried.
+    if ([self _toolbarUsesTahoe]) [self _loadTahoeToolbarModel];
 
     NSToolbar *tb = [[NSToolbar alloc] initWithIdentifier:@"NppToolbar"];
     tb.delegate = self;
@@ -2594,19 +2603,149 @@ static NSToolbarItemIdentifier const kTBUserConfig = @"TB_UserConfig";
     return [self _classicDefaultItemIdentifiers:tb];
 }
 
-// Tahoe profile: one capsule group per semantic cluster (tahoeToolbarGroups()),
+#pragma mark - Tahoe toolbar group model (Liquid Glass)
+
+// Convert the static default group table (array-of-arrays) into the dict-form
+// model TahoeToolbarConfig uses (kind=builtin). The id literals live ONLY in
+// tahoeToolbarGroups() — this is the single source, reshaped for the config layer.
+static NSArray<NSDictionary *> *_tahoeDefaultBuiltinGroupDicts(void) {
+    NSMutableArray<NSDictionary *> *out = [NSMutableArray array];
+    for (NSArray *g in tahoeToolbarGroups())
+        [out addObject:@{ @"label": g[0], @"kind": @"builtin",
+                          @"primary": g[1], @"overflow": g[2], @"hidden": @[] }];
+    return out;
+}
+
+// Map of built-in button id → display name, from toolbarDescriptors().
+static NSDictionary<NSString *, NSString *> *_tahoeButtonDisplayNames(void) {
+    NSMutableDictionary *m = [NSMutableDictionary dictionary];
+    for (NSArray *d in toolbarDescriptors()) m[d[0]] = d[1];
+    return m;
+}
+
+// Default classification of the CURRENT plugin items into a "Plugins" group dict
+// (mirrors the legacy curated-tooltip heuristic). Used only when first
+// materializing the file; thereafter the file is authoritative.
+- (NSDictionary *)_tahoeDefaultPluginsGroupDict {
+    static NSArray<NSString *> *kPrimaryTips = nil;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        kPrimaryTips = @[ @"Compare", @"Clear Active Compare",
+                          @"Spell Check Document Automatically",
+                          @"Show Beads panel", @"Toggle Markdown Panel" ];
+    });
+    NSMutableArray<NSString *> *primary  = [NSMutableArray array];
+    NSMutableArray<NSString *> *overflow = [NSMutableArray array];
+    for (NSDictionary *pti in _pluginToolbarItems) {
+        NSString *tip = pti[@"tooltip"] ?: @"";
+        if (!tip.length) continue;
+        BOOL isPrimary = NO;
+        for (NSString *p in kPrimaryTips)
+            if ([tip caseInsensitiveCompare:p] == NSOrderedSame) { isPrimary = YES; break; }
+        [(isPrimary ? primary : overflow) addObject:tip];
+    }
+    if (primary.count == 0 && overflow.count > 0) {
+        NSUInteger n = MIN((NSUInteger)3, overflow.count);
+        primary  = [[overflow subarrayWithRange:NSMakeRange(0, n)] mutableCopy];
+        overflow = [[overflow subarrayWithRange:NSMakeRange(n, overflow.count - n)] mutableCopy];
+    }
+    return @{ @"label": @"Plugins", @"kind": @"plugins",
+              @"primary": primary, @"overflow": overflow, @"hidden": @[] };
+}
+
+// The plugins group dict in the current model (or nil).
+- (NSDictionary *)_tahoePluginsGroup {
+    for (NSDictionary *g in _tahoeModel)
+        if ([g[@"kind"] isEqualToString:@"plugins"]) return g;
+    return nil;
+}
+
+// Load (or materialize) the Tahoe group model + publish the catalog the
+// Preferences editor reads. Called from buildToolbar (Tahoe only).
+- (void)_loadTahoeToolbarModel {
+    // Publish defaults + display names for the editor (single source of truth).
+    [TahoeToolbarConfig setDefaultBuiltinGroups:_tahoeDefaultBuiltinGroupDicts()];
+    [TahoeToolbarConfig setButtonDisplayNames:_tahoeButtonDisplayNames()];
+
+    NSArray<NSDictionary *> *model = [TahoeToolbarConfig load];
+    if (!model) {
+        // First Tahoe use (or after Reset): defaults + current plugins, persisted.
+        NSMutableArray *m = [_tahoeDefaultBuiltinGroupDicts() mutableCopy];
+        [m addObject:[self _tahoeDefaultPluginsGroupDict]];
+        model = m;
+        [TahoeToolbarConfig saveModel:model];
+    }
+    _tahoeModel = model;
+}
+
+// Append newly-registered plugin command names (to the Plugins overflow) that
+// aren't already classified; missing plugins are kept-but-skipped. Persists +
+// returns YES if the model changed.
+- (BOOL)_reconcileTahoePluginsIfNeeded {
+    if (!_tahoeModel) return NO;
+    NSMutableArray<NSDictionary *> *model = [_tahoeModel mutableCopy];
+    NSInteger idx = -1;
+    NSMutableDictionary *plug = nil;
+    for (NSInteger i = 0; i < (NSInteger)model.count; i++)
+        if ([model[i][@"kind"] isEqualToString:@"plugins"]) {
+            idx = i; plug = [model[i] mutableCopy]; break;
+        }
+    if (!plug) plug = [[self _tahoeDefaultPluginsGroupDict] mutableCopy];
+
+    BOOL changed = NO;
+    if (![plug[@"customized"] boolValue]) {
+        // Not yet customized by the user: re-derive the curated default split over
+        // the CURRENT live plugin set. Plugins register one-by-one at startup with
+        // no "all done" callback, so re-curating on each call keeps the default
+        // correct as more plugins arrive (instead of freezing an early partial set).
+        NSDictionary *fresh = [self _tahoeDefaultPluginsGroupDict];
+        if (![(plug[@"primary"]  ?: @[]) isEqualToArray:fresh[@"primary"]] ||
+            ![(plug[@"overflow"] ?: @[]) isEqualToArray:fresh[@"overflow"]]) {
+            plug = [fresh mutableCopy];   // stays un-customized
+            changed = YES;
+        }
+    } else {
+        // User has taken over: only APPEND genuinely new plugin commands (to
+        // overflow); preserve their arrangement. Missing plugins stay (skipped).
+        NSMutableSet<NSString *> *known = [NSMutableSet set];
+        for (NSString *s in @[@"primary", @"overflow", @"hidden"])
+            [known addObjectsFromArray:(plug[s] ?: @[])];
+        NSMutableArray<NSString *> *overflow = [(plug[@"overflow"] ?: @[]) mutableCopy];
+        for (NSDictionary *pti in _pluginToolbarItems) {
+            NSString *tip = pti[@"tooltip"] ?: @"";
+            if (!tip.length || [known containsObject:tip]) continue;
+            [overflow addObject:tip];
+            [known addObject:tip];
+            changed = YES;
+        }
+        plug[@"overflow"] = overflow;
+    }
+    if (!changed) return NO;
+
+    if (idx >= 0) model[idx] = plug; else [model addObject:plug];
+    _tahoeModel = model;
+    [TahoeToolbarConfig saveModel:model];
+    return YES;
+}
+
+// Tahoe profile: one capsule group per built-in cluster (from _tahoeModel),
 // then the "Plugins" capsule (if any plugins have registered), flexible space, and
 // the tab controls.
 - (NSArray<NSToolbarItemIdentifier> *)_tahoeDefaultItemIdentifiers:(NSToolbar *)tb {
+    if (!_tahoeModel) [self _loadTahoeToolbarModel];
     NSMutableArray<NSToolbarItemIdentifier> *ids = [NSMutableArray array];
     // A system Space item BETWEEN each group breaks the macOS-26 auto-grouping that
     // otherwise wraps all adjacent items in one enclosing glass bar, so each pill
     // stands alone (and the space provides the visible gap between pills).
     BOOL first = YES;
-    for (NSArray *g in tahoeToolbarGroups()) {
+    for (NSDictionary *g in _tahoeModel) {
+        if (![g[@"kind"] isEqualToString:@"builtin"]) continue;
+        // Skip a group whose buttons are all hidden (nothing to show).
+        if (((NSArray *)g[@"primary"]).count == 0 && ((NSArray *)g[@"overflow"]).count == 0)
+            continue;
         if (!first) [ids addObject:NSToolbarSpaceItemIdentifier];
         first = NO;
-        [ids addObject:[kTBTahoeGroupPrefix stringByAppendingString:g[0]]];
+        [ids addObject:[kTBTahoeGroupPrefix stringByAppendingString:g[@"label"]]];
     }
     if (_pluginToolbarItems.count > 0) {
         [ids addObject:NSToolbarSpaceItemIdentifier];
@@ -2660,10 +2799,11 @@ static NSToolbarItemIdentifier const kTBUserConfig = @"TB_UserConfig";
         return [self makeTahoePluginGroupToolbarItem:ident];
     if ([ident hasPrefix:kTBTahoeGroupPrefix]) {
         NSString *label = [ident substringFromIndex:kTBTahoeGroupPrefix.length];
-        for (NSArray *g in tahoeToolbarGroups())
-            if ([g[0] isEqualToString:label])
+        if (!_tahoeModel) [self _loadTahoeToolbarModel];
+        for (NSDictionary *g in _tahoeModel)
+            if ([g[@"kind"] isEqualToString:@"builtin"] && [g[@"label"] isEqualToString:label])
                 return [self makeTahoeGroupToolbarItem:ident label:label
-                                               primary:g[1] overflow:g[2]];
+                                               primary:g[@"primary"] overflow:g[@"overflow"]];
         return nil;
     }
     return [self _classicToolbarItemForIdentifier:ident];
@@ -2739,35 +2879,26 @@ static NSToolbarItemIdentifier const kTBUserConfig = @"TB_UserConfig";
     if (_pluginToolbarItems.count == 0) return nil;
     const CGFloat iconSz   = [NppThemeManager shared].toolbarMetrics.iconSize;
 
-    // Curated DEFAULT: these plugin commands — matched by their registered tooltip
-    // (the plugin's menu-command name) — show as primary buttons in the capsule;
-    // every other plugin icon goes behind the label's ▾. Hardcoded for now; Step
-    // 3e will make per-group visibility user-editable. Case-insensitive match.
-    static NSArray<NSString *> *kPrimaryPluginTips = nil;
-    static dispatch_once_t tipsOnce;
-    dispatch_once(&tipsOnce, ^{
-        kPrimaryPluginTips = @[ @"Compare", @"Clear Active Compare",
-                                @"Spell Check Document Automatically",
-                                @"Show Beads panel", @"Toggle Markdown Panel" ];
-    });
+    // Classification comes from the Tahoe config's "Plugins" group (user-editable
+    // in Preferences ▸ Toolbar). Reconcile first so any newly-registered plugins
+    // are recorded (landing in overflow) before we read the split.
+    if (!_tahoeModel) [self _loadTahoeToolbarModel];
+    [self _reconcileTahoePluginsIfNeeded];
+    NSDictionary *pg = [self _tahoePluginsGroup];
+    NSArray<NSString *> *primNames = pg[@"primary"]  ?: @[];
+    NSArray<NSString *> *overNames = pg[@"overflow"] ?: @[];
 
+    // Live plugin items keyed by command name (tooltip) for ordered lookup.
+    NSMutableDictionary<NSString *, NSDictionary *> *byTip = [NSMutableDictionary dictionary];
+    for (NSDictionary *pti in _pluginToolbarItems) {
+        NSString *t = pti[@"tooltip"] ?: @"";
+        if (t.length && !byTip[t]) byTip[t] = pti;
+    }
     NSMutableArray<NSDictionary *> *primary  = [NSMutableArray array];
     NSMutableArray<NSDictionary *> *overflow = [NSMutableArray array];
-    for (NSDictionary *pti in _pluginToolbarItems) {
-        NSString *tip = pti[@"tooltip"] ?: @"";
-        BOOL isPrimary = NO;
-        for (NSString *p in kPrimaryPluginTips)
-            if ([tip caseInsensitiveCompare:p] == NSOrderedSame) { isPrimary = YES; break; }
-        [(isPrimary ? primary : overflow) addObject:pti];
-    }
-    // Fallback: if none of the curated commands are installed, show the first 3
-    // registered icons as primary so the capsule isn't all-overflow.
-    if (primary.count == 0 && _pluginToolbarItems.count > 0) {
-        NSUInteger n = MIN((NSUInteger)3, _pluginToolbarItems.count);
-        [primary addObjectsFromArray:[_pluginToolbarItems subarrayWithRange:NSMakeRange(0, n)]];
-        overflow = [[_pluginToolbarItems subarrayWithRange:
-                        NSMakeRange(n, _pluginToolbarItems.count - n)] mutableCopy];
-    }
+    for (NSString *name in primNames) { NSDictionary *pti = byTip[name]; if (pti) [primary addObject:pti]; }
+    for (NSString *name in overNames) { NSDictionary *pti = byTip[name]; if (pti) [overflow addObject:pti]; }
+    // Names in the group's <Hidden> list (or absent entirely) are simply not shown.
 
     NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
     for (NSDictionary *pti in primary) {
@@ -3600,6 +3731,10 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     [[NSNotificationCenter defaultCenter]
         addObserver:self selector:@selector(_toolbarColorChanged:)
                name:@"NPPToolbarColorChanged" object:nil];
+    // Tahoe toolbar group layout edited in Preferences → rebuild the toolbar.
+    [[NSNotificationCenter defaultCenter]
+        addObserver:self selector:@selector(_tahoeToolbarConfigChanged:)
+               name:NPPTahoeToolbarConfigChanged object:nil];
     // Phase 2: one observer refreshes every open PanelFrame title, so
     // each individual panel no longer needs its own NPPLocalizationChanged
     // subscriber for the title.
@@ -9578,6 +9713,15 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
 
 - (void)_toolbarColorChanged:(NSNotification *)n {
     [self _reskinToolbarIcons];
+}
+
+// The Tahoe toolbar group layout was edited in Preferences ▸ Toolbar. Reload the
+// model from the file and rebuild the toolbar (Tahoe profile only — Classic is
+// unaffected, its toolbar is a separate construction).
+- (void)_tahoeToolbarConfigChanged:(NSNotification *)n {
+    if (![self _toolbarUsesTahoe]) return;
+    [self _loadTahoeToolbarModel];   // pick up the editor's saved file
+    [self buildToolbar];             // rebuild capsules from the new model
 }
 
 // checkForUpdates: moved to AppDelegate

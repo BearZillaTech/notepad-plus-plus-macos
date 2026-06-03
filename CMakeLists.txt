@@ -94,6 +94,7 @@ set(APP_SRCS
     src/NppLangsManager.mm
     src/AppDelegate.mm
     src/MainWindowController.mm
+    src/TahoeToolbarConfig.mm
     src/EditorView.mm
     src/TabManager.mm
     src/NppTabBar.mm
