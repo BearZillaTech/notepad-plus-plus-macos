@@ -3994,11 +3994,13 @@ static BOOL groupHasTrailingSep(NSString *ident) {
         if (ed.filePath) info[@"filePath"] = ed.filePath;
 
         if (!ed.filePath) {
-            // Untitled tab — only worth restoring if it has content
-            if (!ed.isModified) continue;
+            // Untitled tab — restore if it has content OR was renamed (#177), so a
+            // renamed organizational tab survives relaunch even when empty.
+            if (!ed.isModified && !ed.customTabName.length) continue;
             NSString *backup = [ed saveBackupToDirectory:backupDir];
             if (backup) { info[@"backupFilePath"] = backup; [activeBackups addObject:backup]; }
             info[@"untitledIndex"] = @(ed.untitledIndex);
+            if (ed.customTabName.length) info[@"customTabName"] = ed.customTabName;
         } else if (ed.isModified && !ed.largeFileMode) {
             // Named file with unsaved changes — back up content
             NSString *backup = [ed saveBackupToDirectory:backupDir];
@@ -4131,6 +4133,8 @@ static BOOL groupHasTrailingSep(NSString *ident) {
             // Point filePath back to original (nil for untitled) and mark modified
             ed.filePath = filePath; // nil for untitled — custom setter handles presenter
             ed.backupFilePath = backupPath;
+            NSString *customName = info[@"customTabName"];   // #177 — restore renamed tab
+            if (customName.length) ed.customTabName = customName;
             [ed markAsModified];
         }
         if (lang.length) [ed setLanguage:lang];
@@ -7968,8 +7972,14 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
 
 - (void)renameDocument:(id)sender {
     EditorView *ed = [self currentEditor];
+    if (!ed) return;
+    if (ed.filePath) [self _renameSavedFile:ed];
+    else             [self _renameUntitledTab:ed];   // issue #177 — rename unsaved tab
+}
+
+// Saved file → rename the file on disk (in place) and retitle the tab.
+- (void)_renameSavedFile:(EditorView *)ed {
     NSString *path = ed.filePath;
-    if (!path) return;
     NSAlert *alert = [[NSAlert alloc] init];
     alert.messageText = [[NppLocalizer shared] translate:@"Rename"];
     alert.informativeText = [[NppLocalizer shared] translate:@"Enter a new filename:"];
@@ -7987,12 +7997,65 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
     NSError *err;
     if ([[NSFileManager defaultManager] moveItemAtPath:path toPath:newPath error:&err]) {
         ed.filePath = newPath;
-        [_tabManager refreshCurrentTabTitle];
+        [_activeTabManager refreshCurrentTabTitle];
         [self updateTitle];
+        if (_docListPanel) [_docListPanel reloadData];
         [self addToRecentFiles:newPath];
     } else {
         [[NSAlert alertWithError:err] runModal];
     }
+}
+
+// Untitled tab (issue #177) → rename the TAB only (no file on disk). Renames the
+// backup file too, if one exists, so the backup folder stays in sync with the
+// new name. The name is persisted in the session so it survives relaunch.
+- (void)_renameUntitledTab:(EditorView *)ed {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.messageText = [[NppLocalizer shared] translate:@"Rename Current Tab"];
+    alert.informativeText = [[NppLocalizer shared] translate:@"New name:"];
+    NSTextField *tf = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 0, 260, 22)];
+    tf.stringValue = ed.displayName;
+    alert.accessoryView = tf;
+    [alert addButtonWithTitle:[[NppLocalizer shared] translate:@"Rename"]];
+    [alert addButtonWithTitle:[[NppLocalizer shared] translate:@"Cancel"]];
+    alert.window.initialFirstResponder = tf;
+    if ([alert runModal] != NSAlertFirstButtonReturn) return;
+
+    NSString *newName = [tf.stringValue stringByTrimmingCharactersInSet:
+                         [NSCharacterSet whitespaceCharacterSet]];
+    if (!newName.length || [newName isEqualToString:ed.displayName]) return;
+    // The name becomes part of the backup filename — disallow path separators.
+    if ([newName containsString:@"/"] || [newName containsString:@":"]) {
+        NSAlert *e = [[NSAlert alloc] init];
+        e.messageText = [[NppLocalizer shared] translate:@"Rename failed"];
+        e.informativeText = [[NppLocalizer shared] translate:@"The name cannot contain “/” or “:”."];
+        [e runModal];
+        return;
+    }
+
+    // Rename the existing backup file (if any) to reflect the new name, keeping
+    // its "@<timestamp>" suffix; update the editor's backup path.
+    NSString *oldBackup = ed.backupFilePath;
+    if (oldBackup.length) {
+        NSString *dir     = oldBackup.stringByDeletingLastPathComponent;
+        NSString *oldFile = oldBackup.lastPathComponent;
+        NSString *suffix  = @"";
+        NSRange at = [oldFile rangeOfString:@"@" options:NSBackwardsSearch];
+        if (at.location != NSNotFound) suffix = [oldFile substringFromIndex:at.location];
+        NSString *newBackup = [dir stringByAppendingPathComponent:
+                               [newName stringByAppendingString:suffix]];
+        if (![newBackup isEqualToString:oldBackup]) {
+            NSFileManager *fm = [NSFileManager defaultManager];
+            [fm removeItemAtPath:newBackup error:nil];               // overwrite any stale file
+            if ([fm moveItemAtPath:oldBackup toPath:newBackup error:nil])
+                ed.backupFilePath = newBackup;
+        }
+    }
+
+    ed.customTabName = newName;
+    [_activeTabManager refreshCurrentTabTitle];
+    [self updateTitle];
+    if (_docListPanel) [_docListPanel reloadData];
 }
 
 - (void)moveToTrash:(id)sender {

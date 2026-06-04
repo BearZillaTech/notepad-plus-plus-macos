@@ -785,7 +785,8 @@ static NSUInteger nppLargeFileThreshold(void) {
     if (!dest) {
         // First backup for this buffer — create with timestamp (created once, reused forever)
         NSString *base = _filePath ? _filePath.lastPathComponent
-                                   : [NSString stringWithFormat:@"new %ld", (long)_untitledIndex];
+                       : (_customTabName.length ? _customTabName
+                          : [NSString stringWithFormat:@"new %ld", (long)_untitledIndex]);
         NSDateFormatter *fmt = [[NSDateFormatter alloc] init];
         fmt.dateFormat = @"yyyy-MM-dd_HHmmss";
         NSString *name = [NSString stringWithFormat:@"%@@%@", base,
@@ -1083,6 +1084,7 @@ static NSUInteger nppLargeFileThreshold(void) {
 
 - (NSString *)displayName {
     if (_filePath) return _filePath.lastPathComponent;
+    if (_customTabName.length) return _customTabName;   // #177: renamed untitled tab
     // Mirror NPP: "new 1", "new 2", … (unique per buffer, like NPP's buffer IDs)
     return [NSString stringWithFormat:@"new %ld", (long)_untitledIndex];
 }
