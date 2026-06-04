@@ -1910,6 +1910,12 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
     NSTextField      *_statusRight;
     NSTextField      *_gitBranchLabel;
     NSLayoutConstraint *_findPanelHeightConstraint;
+    // Issue #183 — primary tab bar height constraints for the "Hide tab bar"
+    // pref. Normally _primaryTabBarMinHeight (>= 25, allows multi-row wrap) is
+    // active; hiding swaps to _primaryTabBarZeroHeight (== 0) so the editor
+    // reclaims the strip. Toggled by -_applyTabBarVisibility:.
+    NSLayoutConstraint *_primaryTabBarMinHeight;
+    NSLayoutConstraint *_primaryTabBarZeroHeight;
     NSTimer          *_autoSaveTimer;
     /// YES once restoreLastSession has successfully opened ≥1 tab from the
     /// stored session this launch. Used by saveSession to decide whether the
@@ -3576,16 +3582,25 @@ static BOOL groupHasTrailingSep(NSString *ident) {
     }
     [primaryContainer addSubview:primaryTabBar];
     [primaryContainer addSubview:primaryContentView];
+    // Issue #183: the tab bar's height is held by a swappable constraint so the
+    // "Hide tab bar" pref can collapse it to 0 and let the editor reclaim the
+    // strip (the editor top is pinned to the tab bar's bottom). Min-height (>= 25,
+    // active by default) preserves multi-row wrap; the zero-height constraint
+    // (created here, inactive) is swapped in by -_applyTabBarVisibility:.
+    _primaryTabBarMinHeight  = [primaryTabBar.heightAnchor constraintGreaterThanOrEqualToConstant:25];
+    _primaryTabBarZeroHeight = [primaryTabBar.heightAnchor constraintEqualToConstant:0];
     [NSLayoutConstraint activateConstraints:@[
         [primaryTabBar.topAnchor constraintEqualToAnchor:primaryContainer.topAnchor],
         [primaryTabBar.leadingAnchor constraintEqualToAnchor:primaryContainer.leadingAnchor],
         [primaryTabBar.trailingAnchor constraintEqualToAnchor:primaryContainer.trailingAnchor],
-        [primaryTabBar.heightAnchor constraintGreaterThanOrEqualToConstant:25],
+        _primaryTabBarMinHeight,
         [primaryContentView.topAnchor constraintEqualToAnchor:primaryTabBar.bottomAnchor],
         [primaryContentView.leadingAnchor constraintEqualToAnchor:primaryContainer.leadingAnchor],
         [primaryContentView.trailingAnchor constraintEqualToAnchor:primaryContainer.trailingAnchor],
         [primaryContentView.bottomAnchor constraintEqualToAnchor:primaryContainer.bottomAnchor],
     ]];
+    // Apply the persisted "Hide tab bar" state at launch.
+    [self _applyTabBarVisibility:[[NSUserDefaults standardUserDefaults] boolForKey:kPrefHideTabBar]];
 
     // ── Secondary TabManager (second view, starts collapsed) ──────────────────
     _subTabManagerH = [[TabManager alloc] init];
@@ -6606,7 +6621,7 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
         w.backgroundColor = _savedBgColor ?: [NSColor windowBackgroundColor];
         w.movableByWindowBackground = NO;
 
-        _tabManager.tabBar.hidden = NO;
+        [self _applyTabBarVisibility:[[NSUserDefaults standardUserDefaults] boolForKey:kPrefHideTabBar]];  // #183: restore pref, don't force-show
         _statusBar.hidden = NO;
     }
 }
@@ -6628,7 +6643,7 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
     } else {
         [w.toolbar setVisible:_savedToolbarVisible];
         _statusBar.hidden = NO;
-        _tabManager.tabBar.hidden = NO;
+        [self _applyTabBarVisibility:[[NSUserDefaults standardUserDefaults] boolForKey:kPrefHideTabBar]];  // #183: restore pref, don't force-show
         if (isFullScreen) [w toggleFullScreen:nil];
     }
 }
@@ -9668,6 +9683,35 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
 
 // ── Dark mode ────────────────────────────────────────────────────────────────
 
+// Issue #183: show/hide the primary tab bar and reclaim its space. Swaps the
+// height constraint (min-height <-> zero-height) so the editor fills the strip
+// when hidden, and toggles .hidden so it stops drawing. Primary tab bar only —
+// the secondary split tab bars are out of scope (they appear only in split mode).
+- (void)_applyTabBarVisibility:(BOOL)hide {
+    if (!_primaryTabBarMinHeight || !_primaryTabBarZeroHeight) return;  // not built yet
+    if (hide) {
+        _primaryTabBarMinHeight.active  = NO;    // deactivate the conflicting one first
+        _primaryTabBarZeroHeight.active = YES;
+    } else {
+        _primaryTabBarZeroHeight.active = NO;
+        _primaryTabBarMinHeight.active  = YES;
+    }
+    _tabManager.tabBar.hidden = hide;
+
+    // Tahoe polish: with the tab strip gone, the editor card's top-LEFT corner is
+    // now exposed (it was square because it sat under the first tab), so round it
+    // too; restore top-right-only when the bar returns. Gated to the glass profile.
+    if ([NppThemeManager shared].usesGlassMaterials) {
+        CALayer *contentLayer = _tabManager.contentView.layer;
+        if (contentLayer)
+            contentLayer.maskedCorners = hide
+                ? (kCALayerMinXMaxYCorner | kCALayerMaxXMaxYCorner)   // top-left + top-right
+                : kCALayerMaxXMaxYCorner;                            // top-right only
+    }
+
+    [_tabManager.tabBar.superview layoutSubtreeIfNeeded];
+}
+
 - (void)_prefsChanged:(NSNotification *)n {
     // Status bar visibility
     NSUserDefaults *ud = [NSUserDefaults standardUserDefaults];
@@ -9678,6 +9722,9 @@ static BOOL _writeCLIScript(NSString *script, NSString *path, NSError **outErr) 
     _tabManager.tabBar.wrapMode     = wrapTabs;
     _subTabManagerH.tabBar.wrapMode = wrapTabs;
     _subTabManagerV.tabBar.wrapMode = wrapTabs;
+
+    // Issue #183: apply the "Hide tab bar" pref live.
+    [self _applyTabBarVisibility:[ud boolForKey:kPrefHideTabBar]];
 
     // Title bar (full path vs filename only)
     [self updateTitle];

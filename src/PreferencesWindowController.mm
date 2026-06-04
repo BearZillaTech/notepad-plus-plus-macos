@@ -35,6 +35,7 @@ NSString *const kPrefTabMaxLabelWidth    = @"tabMaxLabelWidth";
 NSString *const kPrefTabCloseButton      = @"tabCloseButton";
 NSString *const kPrefDoubleClickTabClose = @"doubleClickTabClose";
 NSString *const kPrefTabBarWrap          = @"tabBarWrap";
+NSString *const kPrefHideTabBar          = @"hideTabBar";
 NSString *const kPrefVirtualSpace        = @"virtualSpace";
 NSString *const kPrefColumnSel2MultiEdit = @"columnSel2MultiEdit";
 NSString *const kPrefScrollBeyondLastLine= @"scrollBeyondLastLine";
@@ -198,6 +199,7 @@ NSString *const kPrefStyleFontSize      = @"styleFontSize";
         kPrefTabCloseButton:       @YES,
         kPrefDoubleClickTabClose:  @NO,
         kPrefTabBarWrap:           @NO,
+        kPrefHideTabBar:           @NO,
         kPrefVirtualSpace:         @NO,
         kPrefColumnSel2MultiEdit:  @YES,
         kPrefScrollBeyondLastLine: @NO,
@@ -1554,6 +1556,7 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
         @[[loc translate:@"Show close button on tabs"],        @800, kPrefTabCloseButton],
         @[[loc translate:@"Double-click to close tab"],        @801, kPrefDoubleClickTabClose],
         @[[loc translate:@"Wrap tabs to multiple lines"],      @803, kPrefTabBarWrap],
+        @[[loc translate:@"Hide tab bar"],                     @804, kPrefHideTabBar],
     ];
     for (NSArray *def in checks) {
         NSButton *chk = [NSButton checkboxWithTitle:def[0] target:self action:@selector(prefChanged:)];
@@ -2307,6 +2310,7 @@ static NSDictionary<NSString *, NSString *> *_langDisplayNames() {
         case 801: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefDoubleClickTabClose]; break;
         case 802: [ud setInteger:[(NSTextField *)sender integerValue] forKey:kPrefTabMaxLabelWidth]; break;
         case 803: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefTabBarWrap]; break;
+        case 804: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefHideTabBar]; break;
         // General
         case 900: [ud setBool:[(NSButton *)sender state] == NSControlStateValueOn forKey:kPrefShowFullPathInTitle]; break;
         // Searching
