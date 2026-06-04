@@ -2063,6 +2063,9 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
         [[NSNotificationCenter defaultCenter]
             addObserver:self selector:@selector(_editorDidSave:)
                    name:EditorViewDidSaveNotification object:nil];
+        [[NSNotificationCenter defaultCenter]
+            addObserver:self selector:@selector(_shortcutsChanged:)
+                   name:NPPShortcutsChangedNotification object:nil];
         // (scroll sync uses a timer, not notifications)
         [self rebuildRecentFilesMenu];
         [self rebuildUDLLanguageMenu];
@@ -5631,6 +5634,16 @@ static NSArray<NSDictionary *> *convertRecordedToXmlFormat(NSArray<NSDictionary 
     if (!_gitPanel || ![_sidePanelHost hasPanel:_gitPanel]) return;
     [editor updateGitDiffMarkers];
     [self _updateGitBranch:editor.filePath];
+}
+
+// The Shortcut Mapper saved changes — re-push Scintilla-command overrides into every
+// open editor's keymap so edits take effect immediately (no restart). Each editor's
+// applyScintillaKeyOverrides is a no-op when there are no overrides to apply, so this
+// is harmless for non-Scintilla shortcut changes and for non-customising users.
+- (void)_shortcutsChanged:(NSNotification *)note {
+    for (TabManager *mgr in @[_tabManager, _subTabManagerH, _subTabManagerV])
+        for (EditorView *ed in mgr.allEditors.copy)
+            [ed applyScintillaKeyOverrides];
 }
 
 - (void)_showProjectPanelTab:(NSInteger)tab {

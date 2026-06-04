@@ -230,6 +230,7 @@ static NSUInteger nppLargeFileThreshold(void) {
     BOOL    _largeFileMode;
     BOOL    _wordWrapEnabled;
     BOOL    _savedWrapBeforeRTL;  // word wrap state before RTL was enabled
+    BOOL    _scintillaOverridesApplied;  // YES once Scintilla-command overrides were pushed to this editor's keymap
     BOOL    _isRecordingMacro;
     NSMutableArray<NSDictionary *> *_macroActions;
     NSInteger _untitledIndex;   // unique number for untitled tabs (1-based)
@@ -2022,54 +2023,164 @@ static int vkToScintillaKey(int vk) {
     return vk;
 }
 
+// Accurate macOS default keymap for the Shortcut-Mapper commands — GENERATED from
+// the real Scintilla tables (scintilla/src/KeyMap.cxx MapDefault +
+// scintilla/cocoa/ScintillaCocoa.mm macMapDefault) by tools/gen_keymap.py. Maps each
+// command's sciID to the REAL key combo(s) that trigger it by default (keyDef =
+// sckKey | (mod<<16)), so an override can (a) clear the right keys — including
+// multi-bound commands like ⌘Up AND ⌘Home → DocumentStart — and (b) restore them on
+// reset. Built from the same source the editor's keymap is, so re-asserting these is
+// a byte-for-byte no-op at construction. Regenerate if the Scintilla tables change.
+static const struct SciDefaultKeys { int sciID; int n; sptr_t combos[4]; } kSciDefaultKeys[] = {
+    { 2013, 2, { 0x20041, 0x20061, 0, 0 } },  // SCI_SELECTALL
+    { 2180, 1, { 0x134, 0, 0, 0 } },  // SCI_CLEAR
+    { 2176, 2, { 0x2005A, 0x2007A, 0, 0 } },  // SCI_UNDO
+    { 2011, 2, { 0x20059, 0x3007A, 0, 0 } },  // SCI_REDO
+    { 2329, 2, { 0xD, 0x1000D, 0, 0 } },  // SCI_NEWLINE
+    { 2327, 1, { 0x9, 0, 0, 0 } },  // SCI_TAB
+    { 2328, 1, { 0x10009, 0, 0, 0 } },  // SCI_BACKTAB
+    { 2333, 1, { 0x20136, 0, 0, 0 } },  // SCI_ZOOMIN
+    { 2334, 1, { 0x20137, 0, 0, 0 } },  // SCI_ZOOMOUT
+    { 2373, 1, { 0x20138, 0, 0, 0 } },  // SCI_SETZOOM
+    { 2469, 2, { 0x20044, 0x20064, 0, 0 } },  // SCI_SELECTIONDUPLICATE
+    { 2324, 1, { 0x135, 0, 0, 0 } },  // SCI_EDITTOGGLEOVERTYPE
+    { 2300, 1, { 0x12C, 0, 0, 0 } },  // SCI_LINEDOWN
+    { 2301, 1, { 0x1012C, 0, 0, 0 } },  // SCI_LINEDOWNEXTEND
+    { 2426, 1, { 0x5012C, 0, 0, 0 } },  // SCI_LINEDOWNRECTEXTEND
+    { 2342, 1, { 0x10012C, 0, 0, 0 } },  // SCI_LINESCROLLDOWN
+    { 2302, 1, { 0x12D, 0, 0, 0 } },  // SCI_LINEUP
+    { 2303, 1, { 0x1012D, 0, 0, 0 } },  // SCI_LINEUPEXTEND
+    { 2427, 1, { 0x5012D, 0, 0, 0 } },  // SCI_LINEUPRECTEXTEND
+    { 2343, 1, { 0x10012D, 0, 0, 0 } },  // SCI_LINESCROLLUP
+    { 2413, 1, { 0x2005D, 0, 0, 0 } },  // SCI_PARADOWN
+    { 2414, 1, { 0x3005D, 0, 0, 0 } },  // SCI_PARADOWNEXTEND
+    { 2415, 1, { 0x2005B, 0, 0, 0 } },  // SCI_PARAUP
+    { 2416, 1, { 0x3005B, 0, 0, 0 } },  // SCI_PARAUPEXTEND
+    { 2304, 1, { 0x12E, 0, 0, 0 } },  // SCI_CHARLEFT
+    { 2305, 1, { 0x1012E, 0, 0, 0 } },  // SCI_CHARLEFTEXTEND
+    { 2428, 1, { 0x5012E, 0, 0, 0 } },  // SCI_CHARLEFTRECTEXTEND
+    { 2306, 1, { 0x12F, 0, 0, 0 } },  // SCI_CHARRIGHT
+    { 2307, 1, { 0x1012F, 0, 0, 0 } },  // SCI_CHARRIGHTEXTEND
+    { 2429, 1, { 0x5012F, 0, 0, 0 } },  // SCI_CHARRIGHTRECTEXTEND
+    { 2308, 2, { 0x4012E, 0x10012E, 0, 0 } },  // SCI_WORDLEFT
+    { 2309, 1, { 0x11012E, 0, 0, 0 } },  // SCI_WORDLEFTEXTEND
+    { 2310, 2, { 0x4012F, 0x10012F, 0, 0 } },  // SCI_WORDRIGHT
+    { 2311, 1, { 0x11012F, 0, 0, 0 } },  // SCI_WORDRIGHTEXTEND
+    { 2390, 1, { 0x2002F, 0, 0, 0 } },  // SCI_WORDPARTLEFT
+    { 2391, 1, { 0x3002F, 0, 0, 0 } },  // SCI_WORDPARTLEFTEXTEND
+    { 2392, 1, { 0x2005C, 0, 0, 0 } },  // SCI_WORDPARTRIGHT
+    { 2393, 1, { 0x3005C, 0, 0, 0 } },  // SCI_WORDPARTRIGHTEXTEND
+    { 2345, 1, { 0x40130, 0, 0, 0 } },  // SCI_HOMEDISPLAY
+    { 2331, 2, { 0x130, 0x2012E, 0, 0 } },  // SCI_VCHOME
+    { 2332, 2, { 0x10130, 0x3012E, 0, 0 } },  // SCI_VCHOMEEXTEND
+    { 2431, 1, { 0x50130, 0, 0, 0 } },  // SCI_VCHOMERECTEXTEND
+    { 2314, 2, { 0x131, 0x2012F, 0, 0 } },  // SCI_LINEEND
+    { 2315, 2, { 0x10131, 0x3012F, 0, 0 } },  // SCI_LINEENDEXTEND
+    { 2432, 1, { 0x50131, 0, 0, 0 } },  // SCI_LINEENDRECTEXTEND
+    { 2347, 1, { 0x40131, 0, 0, 0 } },  // SCI_LINEENDDISPLAY
+    { 2316, 2, { 0x2012D, 0x20130, 0, 0 } },  // SCI_DOCUMENTSTART
+    { 2317, 2, { 0x3012D, 0x30130, 0, 0 } },  // SCI_DOCUMENTSTARTEXTEND
+    { 2318, 2, { 0x2012C, 0x20131, 0, 0 } },  // SCI_DOCUMENTEND
+    { 2319, 2, { 0x3012C, 0x30131, 0, 0 } },  // SCI_DOCUMENTENDEXTEND
+    { 2320, 1, { 0x132, 0, 0, 0 } },  // SCI_PAGEUP
+    { 2321, 1, { 0x10132, 0, 0, 0 } },  // SCI_PAGEUPEXTEND
+    { 2433, 1, { 0x50132, 0, 0, 0 } },  // SCI_PAGEUPRECTEXTEND
+    { 2322, 1, { 0x133, 0, 0, 0 } },  // SCI_PAGEDOWN
+    { 2323, 1, { 0x10133, 0, 0, 0 } },  // SCI_PAGEDOWNEXTEND
+    { 2434, 1, { 0x50133, 0, 0, 0 } },  // SCI_PAGEDOWNRECTEXTEND
+    { 2326, 2, { 0x8, 0x10008, 0, 0 } },  // SCI_DELETEBACK
+    { 2335, 2, { 0x20008, 0x40008, 0, 0 } },  // SCI_DELWORDLEFT
+    { 2395, 1, { 0x30008, 0, 0, 0 } },  // SCI_DELLINELEFT
+    { 2396, 2, { 0x20134, 0x30134, 0, 0 } },  // SCI_DELLINERIGHT
+    { 2338, 2, { 0x3004C, 0x3006C, 0, 0 } },  // SCI_LINEDELETE
+    { 2337, 2, { 0x2004C, 0x2006C, 0, 0 } },  // SCI_LINECUT
+    { 2455, 2, { 0x30054, 0x30074, 0, 0 } },  // SCI_LINECOPY
+    { 2339, 2, { 0x20054, 0x20074, 0, 0 } },  // SCI_LINETRANSPOSE
+    { 2177, 3, { 0x10134, 0x20058, 0x20078, 0 } },  // SCI_CUT
+    { 2178, 3, { 0x20043, 0x20063, 0x20135, 0 } },  // SCI_COPY
+    { 2179, 3, { 0x10135, 0x20056, 0x20076, 0 } },  // SCI_PASTE
+    { 2325, 1, { 0x7, 0, 0, 0 } },  // SCI_CANCEL
+};
+
+static const struct SciDefaultKeys *sciDefaultKeysFor(int sciID) {
+    for (size_t i = 0; i < sizeof(kSciDefaultKeys)/sizeof(kSciDefaultKeys[0]); i++)
+        if (kSciDefaultKeys[i].sciID == sciID) return &kSciDefaultKeys[i];
+    return NULL;
+}
+
+// Push the user's Scintilla-command shortcut overrides (from ~/.nextpad++/shortcuts.xml)
+// into this editor's Scintilla keymap. Called once at construction and live on every
+// NPPShortcutsChangedNotification (via MainWindowController). Authoritative-per-command:
+// an overridden command's REAL default key(s) are cleared so the original stops firing,
+// then the user's key is bound — fixing both the "both work" and "no effect" bugs. With
+// no overrides (and none ever applied) it returns immediately, leaving the stock keymap
+// untouched, so non-customising users see zero change.
 - (void)applyScintillaKeyOverrides {
     NSString *path = [NSHomeDirectory() stringByAppendingPathComponent:@".nextpad++/shortcuts.xml"];
     NSData *data = [NSData dataWithContentsOfFile:path];
-    if (!data) return;
 
-    NSXMLDocument *doc = [[NSXMLDocument alloc] initWithData:data options:0 error:nil];
-    if (!doc) return;
-
-    NSArray *scintKeys = [doc nodesForXPath:@"//ScintillaKeys/ScintKey" error:nil];
-    if (!scintKeys.count) return;
-
-    ScintillaView *sci = _scintillaView;
-    NSInteger applied = 0;
-
-    for (NSXMLElement *sk in scintKeys) {
-        int sciID    = [[[sk attributeForName:@"ScintID"] stringValue] intValue];
-        int keyCode  = [[[sk attributeForName:@"Key"]     stringValue] intValue];
-        BOOL hasCtrl  = [[[sk attributeForName:@"Ctrl"]  stringValue] isEqualToString:@"yes"];
-        BOOL hasAlt   = [[[sk attributeForName:@"Alt"]   stringValue] isEqualToString:@"yes"];
-        BOOL hasShift = [[[sk attributeForName:@"Shift"] stringValue] isEqualToString:@"yes"];
-        BOOL hasCmd   = [[[sk attributeForName:@"Cmd"]   stringValue] isEqualToString:@"yes"];
-
-        // Backward compat: old files without Cmd attribute treat Ctrl as Command
-        if (!hasCmd && hasCtrl && ![sk attributeForName:@"Cmd"]) {
-            hasCmd = YES; hasCtrl = NO;
+    // Parse the overrides into a flat list first (sciID, keyCode, keyDef).
+    NSMutableArray<NSDictionary *> *overrides = [NSMutableArray array];
+    if (data) {
+        NSXMLDocument *doc = [[NSXMLDocument alloc] initWithData:data options:0 error:nil];
+        NSArray *scintKeys = doc ? [doc nodesForXPath:@"//ScintillaKeys/ScintKey" error:nil] : nil;
+        for (NSXMLElement *sk in scintKeys) {
+            int sciID   = [[[sk attributeForName:@"ScintID"] stringValue] intValue];
+            int keyCode = [[[sk attributeForName:@"Key"]     stringValue] intValue];
+            BOOL hasCtrl  = [[[sk attributeForName:@"Ctrl"]  stringValue] isEqualToString:@"yes"];
+            BOOL hasAlt   = [[[sk attributeForName:@"Alt"]   stringValue] isEqualToString:@"yes"];
+            BOOL hasShift = [[[sk attributeForName:@"Shift"] stringValue] isEqualToString:@"yes"];
+            BOOL hasCmd   = [[[sk attributeForName:@"Cmd"]   stringValue] isEqualToString:@"yes"];
+            // Backward compat: old files without Cmd attribute treat Ctrl as Command
+            if (!hasCmd && hasCtrl && ![sk attributeForName:@"Cmd"]) { hasCmd = YES; hasCtrl = NO; }
+            // On macOS Scintilla: Command → SCMOD_CTRL(2), Control → SCMOD_META(16)
+            int mods = 0;
+            if (hasCmd)   mods |= 2;
+            if (hasCtrl)  mods |= 16;
+            if (hasAlt)   mods |= 4;
+            if (hasShift) mods |= 1;
+            sptr_t keyDef = (sptr_t)vkToScintillaKey(keyCode) | (mods << 16);
+            [overrides addObject:@{ @"sciID": @(sciID), @"keyCode": @(keyCode), @"keyDef": @(keyDef) }];
         }
-
-        // On macOS Scintilla: Command → SCMOD_CTRL(2), Control → SCMOD_META(16)
-        int mods = 0;
-        if (hasCmd)   mods |= 2;   // SCMOD_CTRL (mapped from macOS Command)
-        if (hasCtrl)  mods |= 16;  // SCMOD_META (mapped from macOS Control)
-        if (hasAlt)   mods |= 4;   // SCMOD_ALT
-        if (hasShift) mods |= 1;   // SCMOD_SHIFT
-
-        int sckKey = vkToScintillaKey(keyCode);
-        sptr_t keyDef = sckKey | (mods << 16);
-
-        if (keyCode == 0) {
-            // Key=0 means "remove this binding" — clear it
-            [sci message:2071 wParam:(uptr_t)keyDef lParam:0]; // SCI_CLEARCMDKEY
-        } else {
-            [sci message:2070 wParam:(uptr_t)keyDef lParam:sciID]; // SCI_ASSIGNCMDKEY
-        }
-        applied++;
     }
 
-    if (applied > 0)
-        NSLog(@"[EditorView] Applied %ld Scintilla key override(s)", (long)applied);
+    BOOL hasOverrides = overrides.count > 0;
+    // Zero-impact guard: with no overrides and none ever applied to this editor, leave
+    // Scintilla's stock keymap exactly as constructed (identical to pre-Phase-2 behaviour).
+    if (!hasOverrides && !_scintillaOverridesApplied) return;
+
+    ScintillaView *sci = _scintillaView;
+
+    // Step A — restore every mapper command's REAL default key combo(s). Identity at
+    // construction (the keymap already holds them); on a live re-apply this undoes any
+    // default a prior override had cleared, so removing/resetting an override restores it.
+    for (size_t i = 0; i < sizeof(kSciDefaultKeys)/sizeof(kSciDefaultKeys[0]); i++) {
+        const struct SciDefaultKeys *d = &kSciDefaultKeys[i];
+        for (int j = 0; j < d->n; j++)
+            [sci message:2070 wParam:(uptr_t)d->combos[j] lParam:d->sciID]; // SCI_ASSIGNCMDKEY
+    }
+
+    // Step B — apply each override authoritatively: clear the command's default combo(s)
+    // so the original key stops firing (fixes "both work", incl. multi-bound commands),
+    // then bind the user's chosen key (or leave the command unbound if the user cleared it).
+    for (NSDictionary *o in overrides) {
+        int sciID   = [o[@"sciID"]   intValue];
+        int keyCode = [o[@"keyCode"] intValue];
+        const struct SciDefaultKeys *d = sciDefaultKeysFor(sciID);
+        if (d) for (int j = 0; j < d->n; j++)
+            [sci message:2071 wParam:(uptr_t)d->combos[j] lParam:0]; // SCI_CLEARCMDKEY
+        if (keyCode != 0)
+            [sci message:2070 wParam:(uptr_t)[o[@"keyDef"] longLongValue] lParam:sciID]; // SCI_ASSIGNCMDKEY
+    }
+
+    _scintillaOverridesApplied = hasOverrides;
+
+    // The RTL caret-key swap sits on top of the keymap; re-assert it if this editor is
+    // currently RTL, since Step A/B may have rewritten the Left/Right caret bindings.
+    if (self.isTextDirectionRTL) [self _applyRTLKeyBindings:YES];
+
+    NSLog(@"[EditorView] Scintilla key overrides: %lu applied%@",
+          (unsigned long)overrides.count, hasOverrides ? @"" : @" (none — defaults restored)");
 }
 
 #pragma mark - Preferences
