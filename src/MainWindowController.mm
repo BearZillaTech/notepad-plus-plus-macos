@@ -990,6 +990,16 @@ static NSToolbarItemIdentifier const kTBGroup10 = @"TB_G10"; // macro
 // -makePluginGroupToolbarItemForKey: and -_rebuildPluginToolbarGroups.
 static NSString *const kTBPluginGroupPrefix = @"TB_PluginGrp:";
 
+// DEFAULT (Classic) mode: plugin items are coalesced into "segments" — a maximal run
+// of consecutive standalone (single-icon) plugins becomes ONE item, while a multi-icon
+// plugin (e.g. ComparePlus) is its own item and acts as a boundary. macOS 26 inserts a
+// wide gap between separate NSToolbarItems, so one-item-per-plugin spread the standalone
+// icons out under Tahoe; packing each run into one item keeps them tight AND lets the
+// toolbar hide plugins run-by-run on resize (instead of all at once). The identifier is
+// this prefix + the segment's first plugin group key. See -makePluginSegmentItemStartingAt:
+// and -_rebuildPluginToolbarGroups. (Tahoe + user-config modes are unaffected.)
+static NSString *const kTBPluginSegPrefix = @"TB_PluginSeg:";
+
 // Tahoe profile: one NSToolbarItemGroup per semantic cluster (File/Edit/…). The
 // item identifier is this prefix + the group label. See -makeTahoeGroupToolbarItem:
 // and tahoeToolbarGroups(). Built only when the effective profile is Tahoe.
@@ -1900,6 +1910,17 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
      SidePanelHostDelegate,
      NSMenuDelegate>
 - (void)_saveOpenSidePanels;
+- (void)_populatePluginOverflowMenu:(NSMenu *)menu;  // plugins overflow (≫) submenu
+@end
+
+// Lazy delegate for the plugins overflow (≫) submenu: on open it asks the window
+// controller to repopulate the menu with only the plugins whose toolbar segment is
+// currently overflowed, so the single "Plugins" entry lists just the hidden ones.
+@interface _NppPluginOverflowMenuDelegate : NSObject <NSMenuDelegate>
+@property (nonatomic, weak) MainWindowController *owner;
+@end
+@implementation _NppPluginOverflowMenuDelegate
+- (void)menuNeedsUpdate:(NSMenu *)menu { [self.owner _populatePluginOverflowMenu:menu]; }
 @end
 
 @implementation MainWindowController {
@@ -1997,6 +2018,9 @@ static void _nppTahoeRoundEditorCard(NSView *container, NSView *content) {
 
     // Plugin toolbar icons: array of @{@"id": identifier, @"icon": NSImage, @"tooltip": NSString, @"cmdID": @(int)}
     NSMutableArray<NSDictionary *> *_pluginToolbarItems;
+
+    // Lazy delegate for the plugins overflow (≫) submenu (Classic default mode).
+    _NppPluginOverflowMenuDelegate *_pluginOverflowDelegate;
 
     // Toolbar configuration parsed from toolbarButtonsConf.xml
     NSDictionary *_toolbarConfig; // @{@"hiddenIDs": NSSet, @"extraButtons": NSArray, @"appearance": NSDictionary}
@@ -2297,14 +2321,35 @@ static NSString *npPluginGroupKey(NSDictionary *pti) {
     NSToolbar *tb = self.window.toolbar;
     if (!tb) return;
 
-    // Remove existing plugin-group items (high → low index keeps indices valid).
+    // Remove existing plugin segment items (and any legacy per-group items).
     for (NSInteger i = (NSInteger)tb.items.count - 1; i >= 0; i--) {
-        if ([tb.items[i].itemIdentifier hasPrefix:kTBPluginGroupPrefix])
+        NSString *ident = tb.items[i].itemIdentifier;
+        if ([ident hasPrefix:kTBPluginSegPrefix] || [ident hasPrefix:kTBPluginGroupPrefix])
             [tb removeItemAtIndex:i];
     }
 
-    // Reinsert one item per plugin group, each before the flexible space.
-    for (NSString *key in [self _orderedPluginGroupKeys]) {
+    // Partition the ordered plugin groups into segments: each multi-icon plugin is its
+    // own segment (and acts as a boundary); a maximal run of consecutive single-icon
+    // plugins is coalesced into one segment. Insert one item per segment, identified by
+    // the segment's first group key. Coalescing the runs keeps standalone icons tight
+    // (no macOS-26 inter-item gap between them) while letting the toolbar hide plugins
+    // segment-by-segment on resize instead of all at once.
+    NSArray<NSString *> *ordered = [self _orderedPluginGroupKeys];
+    if (ordered.count == 0) return;
+
+    NSMutableArray<NSString *> *segmentStarts = [NSMutableArray array];
+    NSUInteger gi = 0;
+    while (gi < ordered.count) {
+        [segmentStarts addObject:ordered[gi]];
+        if ([self _isMultiIconGroupKey:ordered[gi]]) {
+            gi++;                                              // multi-icon group = one segment
+        } else {
+            gi++;
+            while (gi < ordered.count && ![self _isMultiIconGroupKey:ordered[gi]]) gi++;  // run of singles
+        }
+    }
+
+    for (NSString *startKey in segmentStarts) {
         NSInteger insertIdx = tb.items.count;
         for (NSInteger i = 0; i < (NSInteger)tb.items.count; i++) {
             if ([tb.items[i].itemIdentifier isEqualToString:NSToolbarFlexibleSpaceItemIdentifier]) {
@@ -2312,7 +2357,7 @@ static NSString *npPluginGroupKey(NSDictionary *pti) {
                 break;
             }
         }
-        [tb insertItemWithItemIdentifier:[kTBPluginGroupPrefix stringByAppendingString:key]
+        [tb insertItemWithItemIdentifier:[kTBPluginSegPrefix stringByAppendingString:startKey]
                                  atIndex:insertIdx];
     }
 }
@@ -2429,6 +2474,187 @@ static NSString *npPluginGroupKey(NSDictionary *pti) {
     return item;
 }
 
+// YES if the plugin group (keyed by pluginDir) registered more than one toolbar icon.
+// A multi-icon plugin stays its own toolbar item (a segment boundary); runs of
+// single-icon plugins between such boundaries are coalesced (see below).
+- (BOOL)_isMultiIconGroupKey:(NSString *)groupKey {
+    NSUInteger cnt = 0;
+    for (NSDictionary *pti in _pluginToolbarItems)
+        if ([npPluginGroupKey(pti) isEqualToString:groupKey]) {
+            if (++cnt > 1) return YES;
+        }
+    return NO;
+}
+
+// Build the toolbar item for the plugin SEGMENT that starts at `firstKey`. A segment is
+// either a single multi-icon plugin group, or a maximal run of consecutive single-icon
+// plugin groups. Reconstructed deterministically from the ordered group list so the
+// item identifier (prefix + firstKey) is stable across rebuilds.
+// The plugin group keys forming the segment that starts at `firstKey`: a single
+// multi-icon plugin, or a maximal run of consecutive single-icon plugins. Same
+// partition as -_rebuildPluginToolbarGroups, so segment identifiers stay consistent.
+- (NSArray<NSString *> *)_pluginSegmentKeysStartingAt:(NSString *)firstKey {
+    NSArray<NSString *> *ordered = [self _orderedPluginGroupKeys];
+    NSUInteger start = [ordered indexOfObject:firstKey];
+    if (start == NSNotFound) return @[];
+    NSMutableArray<NSString *> *keys = [NSMutableArray arrayWithObject:ordered[start]];
+    if (![self _isMultiIconGroupKey:ordered[start]]) {
+        for (NSUInteger i = start + 1; i < ordered.count; i++) {
+            if ([self _isMultiIconGroupKey:ordered[i]]) break;
+            [keys addObject:ordered[i]];
+        }
+    }
+    return keys;
+}
+
+- (NSToolbarItem *)makePluginSegmentItemStartingAt:(NSString *)firstKey {
+    NSArray<NSString *> *ordered = [self _orderedPluginGroupKeys];
+    if ([ordered indexOfObject:firstKey] == NSNotFound) return nil;
+    NSArray<NSString *> *keys = [self _pluginSegmentKeysStartingAt:firstKey];
+    if (keys.count == 0) return nil;
+
+    NSToolbarItem *item = [self _makePluginItemForGroupKeys:keys
+                                  identifier:[kTBPluginSegPrefix stringByAppendingString:firstKey]];
+    if (!item) return nil;
+
+    // Overflow (≫): collapse to a SINGLE "Plugins" submenu that lists only the HIDDEN
+    // plugins. Only the LAST plugin segment carries it — NSToolbar overflows the plugin
+    // block right-to-left, so the last segment is always present once any plugin hides.
+    // Its submenu is populated lazily by -_populatePluginOverflowMenu: from whichever
+    // segments are currently overflowed, so it stays correct as the window resizes.
+    // Every other segment gets a hidden menu item so it adds nothing to the overflow.
+    BOOL isLastSegment = [keys.lastObject isEqualToString:ordered.lastObject];
+    if (isLastSegment) {
+        if (!_pluginOverflowDelegate) {
+            _pluginOverflowDelegate = [_NppPluginOverflowMenuDelegate new];
+            _pluginOverflowDelegate.owner = self;
+        }
+        NSMenu *sub = [[NSMenu alloc] initWithTitle:@"Plugins"];
+        sub.delegate = _pluginOverflowDelegate;
+        NSMenuItem *parent = [[NSMenuItem alloc] initWithTitle:@"Plugins" action:nil keyEquivalent:@""];
+        parent.submenu = sub;
+        item.menuFormRepresentation = parent;
+    } else {
+        NSMenuItem *hidden = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+        hidden.hidden = YES;
+        item.menuFormRepresentation = hidden;
+    }
+    return item;
+}
+
+// Populate the plugins overflow (≫) submenu with only the plugins whose toolbar segment
+// is currently OVERFLOWED (in -items but not -visibleItems). Called lazily on menu open,
+// so it always reflects the current window width.
+- (void)_populatePluginOverflowMenu:(NSMenu *)menu {
+    [menu removeAllItems];
+    NSToolbar *tb = self.window.toolbar;
+    if (!tb) return;
+    NSArray<__kindof NSToolbarItem *> *visible = tb.visibleItems;
+    for (NSToolbarItem *it in tb.items) {
+        if (![it.itemIdentifier hasPrefix:kTBPluginSegPrefix]) continue;
+        if ([visible containsObject:it]) continue;   // visible in the toolbar → not hidden
+        NSString *firstKey = [it.itemIdentifier substringFromIndex:kTBPluginSegPrefix.length];
+        for (NSString *gk in [self _pluginSegmentKeysStartingAt:firstKey]) {
+            for (NSDictionary *pti in _pluginToolbarItems) {
+                if (![npPluginGroupKey(pti) isEqualToString:gk]) continue;
+                NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:(pti[@"tooltip"] ?: @"")
+                    action:@selector(pluginToolbarAction:) keyEquivalent:@""];
+                mi.target = self;
+                mi.tag    = [pti[@"cmdID"] intValue];
+                [menu addItem:mi];
+            }
+        }
+    }
+    if (menu.numberOfItems == 0) {   // safety: never leave the submenu empty
+        NSMenuItem *none = [[NSMenuItem alloc] initWithTitle:@"" action:nil keyEquivalent:@""];
+        none.enabled = NO;
+        [menu addItem:none];
+    }
+}
+
+// Render a contiguous slice of plugin groups into ONE NSToolbarItem. Mirrors
+// -makePluginGroupToolbarItemForKey: (separators bracket multi-icon groups, normal
+// inter-icon spacing elsewhere) but packs several groups into one item so macOS 26's
+// inter-item gap can't appear between them. Separator decisions use the GLOBAL ordered
+// list so dividers land exactly where the per-group layout used to put them.
+- (NSToolbarItem *)_makePluginItemForGroupKeys:(NSArray<NSString *> *)groupKeys
+                                    identifier:(NSString *)ident {
+    const CGFloat kBtnSize  = nppBtnSize();
+    const CGFloat kSpacing  = nppSpacing();
+    const CGFloat kSepInner = 4.0;
+    const CGFloat kSepOuter = 3.0;
+
+    NSArray<NSString *> *ordered = [self _orderedPluginGroupKeys];
+    NSView *container = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, kBtnSize, kBtnSize)];
+    CGFloat x = 0;
+    BOOL prevDrewTrailing = NO;
+    BOOL firstInItem = YES;
+
+    for (NSString *groupKey in groupKeys) {
+        NSMutableArray<NSDictionary *> *members = [NSMutableArray array];
+        for (NSDictionary *pti in _pluginToolbarItems)
+            if ([npPluginGroupKey(pti) isEqualToString:groupKey]) [members addObject:pti];
+        if (members.count == 0) continue;
+
+        NSInteger gIdx    = (NSInteger)[ordered indexOfObject:groupKey];
+        BOOL isMulti      = members.count > 1;
+        BOOL prevIsMulti  = (gIdx > 0) ? [self _isMultiIconGroupKey:ordered[gIdx - 1]] : NO;
+        BOOL drawLeading  = (gIdx == 0) || (isMulti && !prevIsMulti);
+        BOOL drawTrailing = isMulti;
+
+        // Inter-group gap: if neither a trailing (prev) nor a leading (this) separator
+        // sits at the boundary, add the normal inter-icon gap so icons don't touch.
+        if (!firstInItem && !drawLeading && !prevDrewTrailing) x += kSpacing;
+
+        if (drawLeading) {
+            x += kSepOuter;
+            [container addSubview:[[NppSeparatorView alloc]
+                initWithFrame:NSMakeRect(x, 0, 1, kBtnSize)]];
+            x += 1 + kSepInner;
+        }
+
+        NSUInteger j = 0;
+        for (NSDictionary *pti in members) {
+            if (j > 0) x += kSpacing;
+            NppToolbarButton *btn = [[NppToolbarButton alloc]
+                initWithFrame:NSMakeRect(x, 0, kBtnSize, kBtnSize)];
+            NSImage *icon = pti[@"icon"];
+            icon.size = NSMakeSize(nppIconSize(), nppIconSize());
+            btn.image   = icon;
+            btn.toolTip = pti[@"tooltip"];
+            btn.tag     = [pti[@"cmdID"] intValue];
+            btn.target  = self;
+            btn.action  = @selector(pluginToolbarAction:);
+            // No btn.identifier — see -makePluginGroupToolbarItemForKey:; plugin icons
+            // are refreshed by -_refreshPluginToolbarIcons (which matches kTBPluginSegPrefix).
+            [container addSubview:btn];
+            x += kBtnSize;
+            j++;
+        }
+
+        if (drawTrailing) {
+            x += kSepInner;
+            [container addSubview:[[NppSeparatorView alloc]
+                initWithFrame:NSMakeRect(x, 0, 1, kBtnSize)]];
+            x += 1 + kSepOuter;
+        }
+        prevDrewTrailing = drawTrailing;
+        firstInItem = NO;
+    }
+
+    if (x <= 0) return nil;
+    NSRect cf = container.frame; cf.size.width = x; container.frame = cf;
+
+    NSToolbarItem *item = [[NSToolbarItem alloc] initWithItemIdentifier:ident];
+    item.view    = container;
+    item.minSize = NSMakeSize(x, kBtnSize);
+    item.maxSize = NSMakeSize(x, kBtnSize);
+    item.label   = @"Plugins";
+    // menuFormRepresentation is set by the caller -makePluginSegmentItemStartingAt:
+    // (single "Plugins" overflow menu on the last segment; hidden on the rest).
+    return item;
+}
+
 // Try `filename` against each directory in `dirs` in order. Returns the
 // first NSImage that loads, or nil if none of the candidate paths resolve
 // to a readable image. Used by the plugin-icon resolver below to probe
@@ -2538,7 +2764,8 @@ static NSImage *_loadPluginIconFromDirs(NSArray<NSString *> *dirs, NSString *fil
     // picked up on the next layout pass via the builders.
     for (NSToolbarItem *item in toolbar.items) {
         NSString *ident = item.itemIdentifier;
-        if (!([ident hasPrefix:kTBPluginGroupPrefix] || [ident hasPrefix:@"TB_Plugin_"]))
+        if (!([ident hasPrefix:kTBPluginSegPrefix] ||
+              [ident hasPrefix:kTBPluginGroupPrefix] || [ident hasPrefix:@"TB_Plugin_"]))
             continue;
 
         NSMutableArray<NSButton *> *buttons = [NSMutableArray array];
@@ -2802,7 +3029,14 @@ static NSDictionary<NSString *, NSString *> *_tahoeButtonDisplayNames(void) {
      itemForItemIdentifier:(NSToolbarItemIdentifier)ident
  willBeInsertedIntoToolbar:(BOOL)flag {
     if ([self _toolbarUsesTahoe]) return [self _tahoeToolbarItemForIdentifier:ident];
-    return [self _classicToolbarItemForIdentifier:ident];
+    NSToolbarItem *item = [self _classicToolbarItemForIdentifier:ident];
+    // The macOS-26 SDK gives every NSToolbarItem a bordered "Liquid Glass" capsule by
+    // default, and adjacent items merge into one white tray. Classic mode must stay
+    // flat like Sequoia, so strip the per-item background here — this covers every
+    // Classic factory in one place. Harmless on pre-26 SDKs (no pill) and on nil.
+    // Only the Classic path is touched; the Tahoe path is intentionally left as-is.
+    item.bordered = NO;
+    return item;
 }
 
 // Tahoe profile: build a capsule group for each semantic cluster + the Plugins
@@ -2992,7 +3226,13 @@ static NSDictionary<NSString *, NSString *> *_tahoeButtonDisplayNames(void) {
     if ([ident isEqualToString:kTBGroup7])
         return [self makeViewTogglesGroupToolbarItem];
 
-    // Plugin group items (default mode): one item per plugin, packed tightly.
+    // Default Classic mode: one item per plugin segment (a run of standalone plugins,
+    // or a single multi-icon plugin). Tight within a segment; hides segment-by-segment.
+    if ([ident hasPrefix:kTBPluginSegPrefix])
+        return [self makePluginSegmentItemStartingAt:
+                    [ident substringFromIndex:kTBPluginSegPrefix.length]];
+
+    // Legacy per-plugin-group item (no longer inserted in default mode; kept for safety).
     if ([ident hasPrefix:kTBPluginGroupPrefix])
         return [self makePluginGroupToolbarItemForKey:
                     [ident substringFromIndex:kTBPluginGroupPrefix.length]];
