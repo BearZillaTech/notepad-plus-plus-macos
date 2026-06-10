@@ -38,22 +38,22 @@ The goal is not just to make Notepad++ "run" on Mac — it's to make it feel lik
 ## Screenshots
 
 <p align="center">
-  <img src="https://nextpad.org/assets/images/screenshot7.png" alt="Nextpad++ for macOS in Dark mode Classic Look" width="900">
+  <img src="https://nextpad.org/assets/images/screenshot7.png" alt="Nextpad++ for macOS in Dark mode Classic Look" width="850">
   <br><em>Nextpad++ for macOS in Dark mode Classic Look</em>
 </p>
 
 <p align="center">
-  <img src="https://nextpad.org/assets/images/screenshot1.png" alt="Nextpad++ for macOS in Light mode, Classic Look" width="900">
+  <img src="https://nextpad.org/assets/images/screenshot1.png" alt="Nextpad++ for macOS in Light mode, Classic Look" width="850">
   <br><em>Nextpad++ for macOS in Light mode, Classic Look</em>
 </p>
 
 <p align="center">
-  <img src="https://nextpad.org/assets/images/screenshot1.png" alt="Nextpad++ for macOS in Light mode, Classic Look" width="900">
+  <img src="https://nextpad.org/assets/images/screenshot1.png" alt="Nextpad++ for macOS in Light mode, Classic Look" width="850">
   <br><em>Nextpad++ for macOS in Light mode, Classic Look</em>
 </p>
 
 <p align="center">
-  <img src="https://nextpad.org/assets/images/plugins_admin_screen.png" alt="Nextpad++ for macOS in Light mode, Classic Look and Plugin Admin" width="900">
+  <img src="https://nextpad.org/assets/images/plugins_admin_screen.png" alt="Nextpad++ for macOS in Light mode, Classic Look and Plugin Admin" width="850">
   <br><em>Nextpad++ for macOS in Light mode and Classic Look</em>
 </p>
 
